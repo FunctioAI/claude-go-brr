@@ -1,6 +1,6 @@
 # Architecture
 
-`claude-go-brr` offloads Claude Code tasks to optimized bare-metal cloud workers. The best results can be seen on parallel agent tasks, ultracode workflow tasks, and deep-research tasks, where user can get the result 2-3x faster compared to local execution.
+`claude-go-brr` offloads Claude Code tasks to lightning-fast bare-metal cloud workers. The biggest gains come from parallel-agent tasks, Ultracode workflow tasks, and deep-research tasks, where users can get results 2–3× faster than with local execution.
 
 ## Setup and Repository Access
 
@@ -18,10 +18,19 @@ Project environment variables are managed through the cloud settings page. Run `
 ## Claude Code Integration
 
 The plugin exposes 2 ways to submit agent tasks:
-`/claude-go-brr "prompt"` passes prompt unchanged to an optimized bare-metal worker running as a managed background task.
-`/claude-go-brr:ind "prompt 1`
-`prompt 2"` 
-uses the same path but treats each prompt line as an independent cloud agent task.
+
+```text
+/claude-go-brr "prompt"
+```
+
+The standard command passes the prompt unchanged to an optimized bare-metal worker running as a managed background task.
+
+```text
+/claude-go-brr:ind "prompt 1
+prompt 2"
+```
+
+The `:ind` command uses the same path but treats each prompt line as an independent cloud agent task.
 
 The local client resolves the current GitHub repository, checked-out branch, and project subdirectory, then submits them to the offload API. Local uncommitted changes are excluded because cloud runs use the branch stored on GitHub.
 

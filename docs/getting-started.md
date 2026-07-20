@@ -42,7 +42,7 @@ You can offload multi-agent ultracode workflows, and deep-research tasks by incl
 /claude-go-brr ultracode implement the authentication flow
 ```
 
-Use `/claude-go-brr:ind` to run each line of the prompt as an independent cloud agent task:
+Use `/claude-go-brr:ind` to run each line of the prompt as an independent cloud agent task, each in its own claude intance:
 
 ```text
 /claude-go-brr:ind Review the API implementation
