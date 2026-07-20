@@ -6,33 +6,28 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE.md)
 ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757?style=flat-square)
 
-A patched, faster Claude Code for parallel agent execution. Install it alongside vanilla Claude and see the difference.
+Offload Claude Code workflows, deep-research, and parallel agent tasks to the cloud, and get results 2-3x faster.
 
-- **2–8× faster** deep-research 🔬
-- **2–8× faster** ultracode workflow execution ⚙️
-- **2–5× faster** main chat agent swarms 🐝
+- **2–3× faster** ultracode workflow execution ⚙️
+- **2–3× faster** deep-research 🔬
+- **2–3× faster** swarm of claude code instances 🐝
 
 
 <p align="center">
   <img src="media/speed-comparison.gif" alt="claude-go-brr speed comparison" width="100%">
   <br>
-  <em>We can speed up deep-research 2–8×.</em>
+  <em>We can speed up ultracode workflows 2–3×.</em>
 </p>
 
 ## Install
 
 ```text
-/plugin marketplace add Functio-AI/claude-go-brr
+/plugin marketplace add FunctioAI/claude-go-brr
 /plugin install claude-go-brr@claude-go-brr
 /reload-plugins
 /claude-go-brr:install v0.1.1
 ```
 
----
-OR
-```text
-curl -fsSL https://raw.githubusercontent.com/Functio-AI/claude-go-brr/main/install.sh | bash -s -- v0.1.1
-```
 ---
 
 ## Docs
