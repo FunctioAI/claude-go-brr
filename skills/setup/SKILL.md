@@ -16,7 +16,7 @@ Run this command exactly:
 if [[ -x "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" ]]; then "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" "$ARGUMENTS"; elif [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/setup.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/setup.sh" "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/setup.sh "$ARGUMENTS"; fi
 ```
 
-If no device code is provided and auth already exists, the script requests the GitHub App install URL for the current repo. If auth does not exist, it starts GitHub login and prints a login URL plus the follow-up `/claude-go-brr:setup DEVICE_CODE` command.
+If no device code is provided and auth already exists, the script requests the GitHub App install URL for the current repo. If auth does not exist, it starts GitHub login, saves the pending device code locally, and prints a login URL plus the follow-up `/claude-go-brr:setup` command. That second argument-free invocation exchanges the saved code.
 
 If a device code is provided, the script exchanges it for a client token and saves `~/.config/offload/config`.
 

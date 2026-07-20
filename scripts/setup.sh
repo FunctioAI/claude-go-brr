@@ -21,6 +21,7 @@ else
 fi
 
 CONFIG="${OFFLOAD_CONFIG:-$HOME/.config/offload/config}"
+PENDING_DEVICE_CODE_FILE="${OFFLOAD_PENDING_DEVICE_CODE_FILE:-$CONFIG.pending-device-code}"
 ENV_OFFLOAD_API_URL="${OFFLOAD_API_URL-}"
 ENV_OFFLOAD_API_KEY="${OFFLOAD_API_KEY-}"
 ENV_OFFLOAD_REMOTE="${OFFLOAD_REMOTE-}"
@@ -68,9 +69,40 @@ reload_saved_config() {
   [[ -n "$ENV_OFFLOAD_API_KEY" ]] && OFFLOAD_API_KEY="$ENV_OFFLOAD_API_KEY"
   [[ -n "$ENV_OFFLOAD_REMOTE" ]] && OFFLOAD_REMOTE="$ENV_OFFLOAD_REMOTE"
   [[ -n "$ENV_OFFLOAD_GITHUB_LOGIN" ]] && OFFLOAD_GITHUB_LOGIN="$ENV_OFFLOAD_GITHUB_LOGIN"
+  return 0
+}
+
+save_pending_device_code() {
+  mkdir -p "$(dirname "$PENDING_DEVICE_CODE_FILE")"
+  umask 077
+  printf '%s\n' "$1" > "$PENDING_DEVICE_CODE_FILE"
+  chmod 600 "$PENDING_DEVICE_CODE_FILE"
+}
+
+exchange_device_code() {
+  "$CLIENT" auth exchange "$1" --name "$NAME"
+  rm -f "$PENDING_DEVICE_CODE_FILE"
+}
+
+request_install_url() {
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    reload_saved_config
+    require_matching_saved_login
+    echo "Requesting GitHub App install URL for this repo..."
+    "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}" || {
+      echo
+      echo "Auth is saved, but repo approval URL could not be created automatically."
+      echo "Run /claude-go-brr:setup from the target repo, or run:"
+      echo "$CLIENT github install-url --repo OWNER/REPO"
+    }
+  else
+    echo "Auth saved. From the target repo, run /claude-go-brr:setup again or run:"
+    echo "$CLIENT github install-url --repo OWNER/REPO"
+  fi
 }
 
 logout() {
+  rm -f "$PENDING_DEVICE_CODE_FILE"
   if [[ ! -f "$CONFIG" ]]; then
     echo "No offload login found at $CONFIG."
     return 0
@@ -100,13 +132,21 @@ case "${1:-}" in
       "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}"
       exit 0
     fi
+    if [[ -z "${OFFLOAD_API_KEY:-}" && -s "$PENDING_DEVICE_CODE_FILE" ]]; then
+      DEVICE_CODE="$(<"$PENDING_DEVICE_CODE_FILE")"
+      exchange_device_code "$DEVICE_CODE"
+      echo
+      request_install_url
+      exit 0
+    fi
     RESP="$("$CLIENT" auth start "$@")"
     printf '%s\n' "$RESP"
     DEVICE_CODE="$(printf '%s\n' "$RESP" | awk -F= '/^device_code=/ {print $2; exit}')"
     if [[ -n "$DEVICE_CODE" ]]; then
+      save_pending_device_code "$DEVICE_CODE"
       echo
       echo "Open the login_url above in your browser. After GitHub says login complete, run:"
-      echo "/claude-go-brr:setup $DEVICE_CODE"
+      echo "/claude-go-brr:setup"
     fi
     ;;
   start|login)
@@ -115,9 +155,10 @@ case "${1:-}" in
     printf '%s\n' "$RESP"
     DEVICE_CODE="$(printf '%s\n' "$RESP" | awk -F= '/^device_code=/ {print $2; exit}')"
     if [[ -n "$DEVICE_CODE" ]]; then
+      save_pending_device_code "$DEVICE_CODE"
       echo
       echo "Open the login_url above in your browser. After GitHub says login complete, run:"
-      echo "/claude-go-brr:setup $DEVICE_CODE"
+      echo "/claude-go-brr:setup"
     fi
     ;;
   -h|--help|help)
@@ -127,21 +168,8 @@ case "${1:-}" in
     logout
     ;;
   *)
-    "$CLIENT" auth exchange "$1" --name "$NAME"
+    exchange_device_code "$1"
     echo
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      reload_saved_config
-      require_matching_saved_login
-      echo "Requesting GitHub App install URL for this repo..."
-      "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}" || {
-        echo
-        echo "Auth is saved, but repo approval URL could not be created automatically."
-        echo "Run /claude-go-brr:setup from the target repo, or run:"
-        echo "$CLIENT github install-url --repo OWNER/REPO"
-      }
-    else
-      echo "Auth saved. From the target repo, run /claude-go-brr:setup again or run:"
-      echo "$CLIENT github install-url --repo OWNER/REPO"
-    fi
+    request_install_url
     ;;
 esac
