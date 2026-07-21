@@ -44,11 +44,9 @@ Offload Claude Code workflows, deep-research, and parallel agent tasks to the cl
   &nbsp;&nbsp;&nbsp;
   <img src="media/logos/nvidia_chip.png" alt="NVIDIA" height="88">
   &nbsp;&nbsp;&nbsp;
-  <img src="media/logos/uchicago_chip.png" alt="UChicago" height="88">
-  &nbsp;&nbsp;&nbsp;
   <img src="media/logos/eth_chip.png" alt="ETH Zürich" height="88">
   <br><br>
-  Reach out to us! <a href="https://x.com/MakarKuznietsov">@MakarKuznietsov</a> · <a href="https://x.com/guidotrev">@guidotrev</a>
+  Reach out to us! <a href="https://x.com/MakarKuznietsov">@MakarKuznietsov</a> 
 </p>
 
 <img src="media/footer.png" alt="claude-go-brr" width="100%">
