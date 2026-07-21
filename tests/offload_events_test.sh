@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CLIENT="$ROOT/plugins/claude-go-brr/offload.sh"
 TMP="$(mktemp -d)"
 PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 REQUESTS="$TMP/requests.jsonl"
@@ -81,6 +82,9 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length))
         scenario = body.get("prompt", "unknown")
+        if scenario == "invalid_run_id":
+            self.send_json({"run_id": "../escape"})
+            return
         with lock:
             serial += 1
             run_id = f"test-{scenario}-{serial}"
@@ -175,7 +179,7 @@ run_client() {
   local scenario="$1" expected_status="$2"
   RUN_OUTPUT="$TMP/$scenario.out"
   set +e
-  (cd "$ROOT" && TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_POLL_INTERVAL=1 OFFLOAD_POLL_TIMEOUT=8 ./offload.sh submit "$scenario") >"$RUN_OUTPUT" 2>&1
+  (cd "$ROOT" && TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL=1 OFFLOAD_POLL_TIMEOUT=8 "$CLIENT" submit "$scenario") >"$RUN_OUTPUT" 2>&1
   RUN_STATUS=$?
   set -e
   [[ "$RUN_STATUS" -eq "$expected_status" ]] || fail "$scenario exited $RUN_STATUS, expected $expected_status: $(<"$RUN_OUTPUT")"
@@ -205,6 +209,10 @@ invalid_patch_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
 [[ "$(<"$RUN_OUTPUT")" == *'returned patch failed git apply --check'* ]] || fail "invalid patch failure was not surfaced"
 [[ "$(<"$RUN_OUTPUT")" == *$'Agent output:\nInvalid patch output.'* ]] || fail "invalid patch agent output was not displayed"
 
+run_client invalid_run_id 65
+[[ "$(<"$RUN_OUTPUT")" == *'protocol error: run_id must be 1-128 URL- and filename-safe characters'* ]] || fail "unsafe run_id was not rejected"
+[[ ! -e "$ROOT/.git/escape.patch" ]] || fail "unsafe run_id escaped the offload output directory"
+
 run_client network_retry 0
 [[ "$(<"$RUN_OUTPUT")" == *'retrying after 1.0s with after=0'* ]] || fail "network retry did not retain cursor 0"
 run_client server_retry 0
@@ -228,7 +236,7 @@ run_client unknown_terminal 1
 [[ "$(<"$RUN_OUTPUT")" == *'x run custom_terminal_error'* ]] || fail "authoritative unknown terminal status was not displayed"
 
 cancel_output="$TMP/cancel.out"
-(cd "$ROOT" && exec env TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_POLL_INTERVAL=1 OFFLOAD_POLL_TIMEOUT=8 ./offload.sh submit cancel) >"$cancel_output" 2>&1 &
+(cd "$ROOT" && exec env TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL=1 OFFLOAD_POLL_TIMEOUT=8 "$CLIENT" submit cancel) >"$cancel_output" 2>&1 &
 CLIENT_PID=$!
 for _ in {1..50}; do
   cancel_count="$(python3 -c 'import json, pathlib, sys; print(sum(json.loads(line).get("scenario") == "cancel" for line in pathlib.Path(sys.argv[1]).read_text().splitlines()))' "$REQUESTS")"
@@ -275,8 +283,14 @@ for name in ("network_retry", "server_retry", "rate_limit"):
 PY
 
 export OFFLOAD_CONFIG="$TMP/config"
-# shellcheck source=../offload.sh
-source "$ROOT/offload.sh"
+# shellcheck source=../plugins/claude-go-brr/offload.sh
+source "$CLIENT"
+require_run_id "$(printf 'a%.0s' {1..128})"
+if (require_run_id "$(printf 'a%.0s' {1..129})") >/dev/null 2>&1; then
+  fail "129-character run_id was accepted"
+fi
+[[ "$(project_folder_id owner repo a/b)" != "$(project_folder_id owner repo a-b)" ]] || fail "folder IDs collide for distinct subdirectory paths"
+[[ "$(project_folder_id owner repo path)" != "$(project_folder_id other repo path)" ]] || fail "folder IDs collide for distinct repository owners"
 unit_body="$TMP/unit.json"
 unit_state="$TMP/unit-state.json"
 unit_log="$TMP/unit.log"
@@ -293,9 +307,9 @@ Path(sys.argv[1]).write_text(json.dumps({
 }))
 PY
 apply_events_response "$unit_body" unit 0 "$unit_state" "$unit_log" >/dev/null
-unit_log_inode="$(stat -f '%i' "$unit_log" 2>/dev/null || stat -c '%i' "$unit_log")"
+unit_log_inode="$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$unit_log")"
 apply_events_response "$unit_body" unit 0 "$unit_state" "$unit_log" >/dev/null
-[[ "$(stat -f '%i' "$unit_log" 2>/dev/null || stat -c '%i' "$unit_log")" == "$unit_log_inode" ]] || fail "live worker log was replaced instead of appended"
+[[ "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$unit_log")" == "$unit_log_inode" ]] || fail "live worker log was replaced instead of appended"
 [[ "$(grep -c '^\[prompt 0\] same$' "$unit_log")" -eq 1 ]] || fail "same-cursor replay duplicated committed output"
 [[ "$(grep -c '^\[prompt 1\] other$' "$unit_log")" -eq 1 ]] || fail "multi-event batch was not applied atomically"
 

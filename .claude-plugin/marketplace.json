@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "claude-go-brr",
-      "source": "./",
+      "source": "./plugins/claude-go-brr",
       "description": "Offload Claude Code workflows and agent tasks to the cloud."
     }
   ]

@@ -20,7 +20,7 @@ Project environment variables are managed through the cloud settings page. Run `
 The plugin exposes 2 ways to submit agent tasks:
 
 ```text
-/claude-go-brr "prompt"
+/claude-go-brr:claude-go-brr "prompt"
 ```
 
 The standard command passes the prompt unchanged to an optimized bare-metal worker running as a managed background task.

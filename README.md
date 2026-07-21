@@ -3,7 +3,7 @@
 <img src="media/header.png" alt="" width="100%">
 
 [![Release](https://img.shields.io/github/v/release/Functio-AI/claude-go-brr?style=flat-square)](https://github.com/Functio-AI/claude-go-brr/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](plugins/claude-go-brr/LICENSE.md)
 ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757?style=flat-square)
 
 Offload Claude Code workflows, deep-research, and parallel agent tasks to the cloud, and get results 2-3x faster.
@@ -22,10 +22,11 @@ Offload Claude Code workflows, deep-research, and parallel agent tasks to the cl
 ## Install
 
 ```text
-/plugin marketplace add FunctioAI/claude-go-brr
+/plugin marketplace add Functio-AI/claude-go-brr
 /plugin install claude-go-brr@claude-go-brr
 /reload-plugins
 /claude-go-brr:setup
+/claude-go-brr:claude-go-brr Fix the failing tests
 ```
 
 ---
