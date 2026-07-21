@@ -1,0 +1,14 @@
+{
+  "name": "claude-go-brr",
+  "owner": {
+    "name": "Functio-AI"
+  },
+  "description": "Cloud offloading tools for Claude Code workflows and agent tasks.",
+  "plugins": [
+    {
+      "name": "claude-go-brr",
+      "source": "./",
+      "description": "Offload Claude Code workflows and agent tasks to the cloud."
+    }
+  ]
+}
