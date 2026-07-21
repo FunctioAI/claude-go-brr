@@ -746,9 +746,10 @@ PY
 
   log_prefix="${run_id//[^A-Za-z0-9._-]/-}"
   log_file="$(mktemp "${TMPDIR:-/tmp}/offload-${log_prefix}.XXXXXX")"
-  echo "  worker log: $log_file"
+  echo "  Claude Code output on the worker: $log_file"
+  printf '  To see live Claude Code output, run: tail -f %q\n' "$log_file"
 
-  echo "> waiting for completion (Ctrl-C to stop waiting; the run continues remotely)..."
+  echo "> waiting for completion..."
   poll_dir="$(mktemp -d "${TMPDIR:-/tmp}/offload-poll-${log_prefix}.XXXXXX")"
   header_file="$poll_dir/headers"
   state_file="$poll_dir/state.json"
@@ -808,7 +809,7 @@ PY
               echo "  patch:  no changes"
             fi
             echo "  output: $output_file"
-            echo "  worker log: $log_file"
+            echo "  Claude Code output on the worker: $log_file"
             echo
             echo "Agent output:"
             printf '%s\n' "$(<"$output_file")"
@@ -823,7 +824,7 @@ PY
           if [[ "$status" == "env_failed" ]]; then
             echo "x run $status - project environment injection failed; manage values in the browser: $(env_settings_url "$folder_id")" >&2
           else
-            echo "x run $status - inspect the worker log: $log_file" >&2
+            echo "x run $status - inspect Claude Code output on the worker: $log_file" >&2
           fi
           exit 1
         fi

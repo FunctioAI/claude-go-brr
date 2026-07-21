@@ -184,8 +184,10 @@ run_client() {
 run_client happy 0
 happy_output="$(<"$RUN_OUTPUT")"
 happy_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
-happy_log="$(sed -n 's/^  worker log: //p' "$RUN_OUTPUT" | head -n 1)"
+happy_log="$(sed -n 's/^  Claude Code output on the worker: //p' "$RUN_OUTPUT" | head -n 1)"
 [[ -f "$happy_log" ]] || fail "happy worker log was not created"
+[[ "$happy_output" == *"To see live Claude Code output, run: tail -f $happy_log"* ]] || fail "live worker log command was not displayed"
+[[ "$happy_output" != *'Ctrl-C to stop waiting'* ]] || fail "obsolete Ctrl-C message was displayed"
 [[ "$happy_output" != *"<script>"* ]] || fail "untrusted event text was printed into the process UI"
 [[ "$(<"$happy_log")" == *'[prompt 0] first worker line'* ]] || fail "prompt 0 output missing"
 [[ "$(<"$happy_log")" == *'[prompt 1] <script>pwned()</script>'* ]] || fail "prompt 1 text was not preserved as plain text"
@@ -219,7 +221,7 @@ run_client http_403 77
 run_client http_404 65
 [[ "$(<"$RUN_OUTPUT")" == *'not-found protocol error:'* ]] || fail "404 not-found error was not surfaced"
 run_client malformed 65
-malformed_log="$(sed -n 's/^  worker log: //p' "$RUN_OUTPUT" | head -n 1)"
+malformed_log="$(sed -n 's/^  Claude Code output on the worker: //p' "$RUN_OUTPUT" | head -n 1)"
 [[ ! -s "$malformed_log" ]] || fail "malformed response partially applied a batch"
 [[ "$(<"$RUN_OUTPUT")" == *'protocol error: batch 1 event 1 text must be a string'* ]] || fail "malformed response error was not clear"
 run_client unknown_terminal 1
