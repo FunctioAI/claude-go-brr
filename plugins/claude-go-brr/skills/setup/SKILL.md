@@ -16,7 +16,7 @@ Run this command exactly:
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" "$ARGUMENTS"
 ```
 
-If no device code is provided and auth already exists, the script requests the GitHub App install URL for the current repo. If auth does not exist, it starts GitHub login, saves the pending device code locally, and prints a login URL plus the follow-up `/claude-go-brr:setup` command. That second argument-free invocation exchanges the saved code.
+If no device code is provided and auth already exists, the script checks whether the current repository is public. Public repositories need no GitHub App installation; private repositories receive an installation URL. If auth does not exist, it starts GitHub login, saves the pending device code locally, and prints a login URL plus the follow-up `/claude-go-brr:setup` command. That second argument-free invocation exchanges the saved code and checks repository visibility.
 
 If a device code is provided, the script exchanges it for a client token and saves `~/.config/offload/config`.
 

@@ -5,7 +5,8 @@
 # One-time setup:
 #   offload.sh auth start
 #   offload.sh auth exchange DEVICE_CODE --name my-laptop
-#   offload.sh github install-url --repo OWNER/REPO
+#   offload.sh github visibility --repo OWNER/REPO
+#   offload.sh github install-url --repo OWNER/REPO  # private repos only
 #
 # Project environment variables:
 #   offload.sh env
@@ -544,12 +545,59 @@ PY
   [[ -n "$install_url" ]] && echo "install_url=$install_url"
 }
 
+github_visibility() {
+  local owner repo repo_arg remote api resp http_code body visibility
+  remote="${OFFLOAD_REMOTE:-}"
+  api="${OFFLOAD_GITHUB_API_URL:-https://api.github.com}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo_arg="$2"; shift 2 ;;
+      --owner) owner="$2"; shift 2 ;;
+      --name|--repo-name) repo="$2"; shift 2 ;;
+      --remote) OFFLOAD_REMOTE="$2"; remote="$2"; shift 2 ;;
+      -h|--help) echo "usage: $0 github visibility [--repo OWNER/REPO] [--remote REMOTE]"; exit 0 ;;
+      *) echo "unknown flag: $1" >&2; exit 64 ;;
+    esac
+  done
+  if [[ -n "${repo_arg:-}" ]]; then
+    owner="${repo_arg%%/*}"
+    repo="${repo_arg#*/}"
+  fi
+  if [[ -z "${owner:-}" || -z "${repo:-}" || "$owner" == "$repo" ]]; then
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "error: --repo OWNER/REPO is required outside a git repo" >&2; exit 65; }
+    [[ -n "$remote" ]] && OFFLOAD_REMOTE="$remote"
+    select_github_remote
+    owner="$SELECTED_REPO_OWNER"
+    repo="$SELECTED_REPO_NAME"
+  fi
+
+  if ! resp="$(curl -sS -L -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -w $'\n%{http_code}' "${api%/}/repos/$owner/$repo")"; then
+    echo "unknown"
+    return 1
+  fi
+  http_code="${resp##*$'\n'}"
+  body="${resp%$'\n'*}"
+  if [[ "$http_code" == 2* ]]; then
+    visibility="$(printf '%s' "$body" | python3 -c 'import json, sys; value = json.load(sys.stdin).get("private"); print("private" if value is True else "public" if value is False else "unknown")' 2>/dev/null || true)"
+    printf '%s\n' "${visibility:-unknown}"
+    [[ "$visibility" != "unknown" ]]
+    return
+  fi
+  if [[ "$http_code" == "404" ]]; then
+    echo "private"
+    return
+  fi
+  echo "unknown"
+  return 1
+}
+
 github_cmd() {
   local sub="${1:-}"
   [[ $# -gt 0 ]] && shift
   case "$sub" in
     install-url) github_install_url "$@" ;;
-    -h|--help|"") echo "usage: $0 github install-url [--repo OWNER/REPO]"; exit 0 ;;
+    visibility) github_visibility "$@" ;;
+    -h|--help|"") echo "usage: $0 github {visibility|install-url} [--repo OWNER/REPO]"; exit 0 ;;
     *) echo "unknown github command: $sub" >&2; exit 64 ;;
   esac
 }

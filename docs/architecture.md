@@ -8,10 +8,10 @@ Run `/claude-go-brr:setup` from the repository you want to use:
 
 1. The command starts a GitHub device login and prints a login URL.
 2. Open the URL and authorize `claude-go-brr` with GitHub.
-3. Run `/claude-go-brr:setup` again. The client exchanges the saved device code for an API key in `~/.config/offload/config` and prints a GitHub App installation URL.
-4. Open the installation URL and grant the GitHub App access to the repository.
+3. Run `/claude-go-brr:setup` again. The client exchanges the saved device code for an API key in `~/.config/offload/config` and checks the repository visibility.
+4. Public repositories are ready immediately. For private repositories, open the printed installation URL and grant the GitHub App access to the repository.
 
-If you are already signed in, `/claude-go-brr:setup` skips the login flow and prints the installation URL for the current repository.
+If you are already signed in, `/claude-go-brr:setup` skips the login flow and checks the current repository. It prints an installation URL only when the repository is not publicly accessible or its visibility cannot be determined.
 
 Project environment variables are managed through the cloud settings page. Run `/claude-go-brr:env` from the project to print its settings URL and configured key names, then add or update values in the browser. Secret values are never accepted or printed by the local command and are injected into subsequent cloud runs.
 
@@ -42,7 +42,7 @@ The offload service starts a run from the selected GitHub ref and executes the r
 Claude Code -> plugin -> offload API -> cloud workers
 ```
 
-Repository access is granted through the GitHub App. Optional project environment variables are stored by the service and injected into cloud runs; their values are managed only through the browser settings page.
+Public repositories are cloned without authentication. Private repository access is granted through the GitHub App. Optional project environment variables are stored by the service and injected into cloud runs; their values are managed only through the browser settings page.
 
 ## Result Delivery
 

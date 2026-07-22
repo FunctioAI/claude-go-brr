@@ -73,6 +73,17 @@ request_install_url() {
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     reload_saved_config
     require_matching_saved_login
+    local visibility
+    visibility="$("$CLIENT" github visibility --remote "${OFFLOAD_REMOTE:-origin}" 2>/dev/null)" || visibility="unknown"
+    if [[ "$visibility" == "public" ]]; then
+      echo "Repository is public. GitHub App installation is not required."
+      return
+    fi
+    if [[ "$visibility" == "private" ]]; then
+      echo "Repository is private or not publicly accessible. GitHub App installation is required."
+    else
+      echo "Could not determine repository visibility. Continuing with GitHub App installation."
+    fi
     echo "Requesting GitHub App install URL for this repo..."
     "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}" || {
       echo
@@ -81,8 +92,7 @@ request_install_url() {
       echo "$CLIENT github install-url --repo OWNER/REPO"
     }
   else
-    echo "Auth saved. From the target repo, run /claude-go-brr:setup again or run:"
-    echo "$CLIENT github install-url --repo OWNER/REPO"
+    echo "Auth saved. From the target repo, run /claude-go-brr:setup to check whether GitHub App installation is required."
   fi
 }
 
@@ -113,8 +123,7 @@ fi
 case "${1:-}" in
   "")
     if [[ -n "${OFFLOAD_API_KEY:-}" ]] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      require_matching_saved_login
-      "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}"
+      request_install_url
       exit 0
     fi
     if [[ -z "${OFFLOAD_API_KEY:-}" && -s "$PENDING_DEVICE_CODE_FILE" ]]; then

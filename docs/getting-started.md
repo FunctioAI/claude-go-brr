@@ -26,7 +26,7 @@ From the GitHub repository you want to offload, start the one-time setup:
 /claude-go-brr:setup
 ```
 
-Open the printed login URL and authorize with GitHub. When login completes, run `/claude-go-brr:setup` again, then open the GitHub App installation URL and grant access to the repository.
+Open the printed login URL and authorize with GitHub. When login completes, run `/claude-go-brr:setup` again. Public repositories need no additional repository authorization; for private repositories, open the printed GitHub App installation URL and grant access to the repository.
 
 ## Let's run it
 
