@@ -21,8 +21,6 @@ Offload Claude Code workflows, deep-research, and parallel agent tasks to the cl
 /plugin marketplace add FunctioAI/claude-go-brr
 /plugin install claude-go-brr@claude-go-brr
 /reload-plugins
-/claude-go-brr:setup
-/claude-go-brr:claude-go-brr Fix the failing tests
 ```
 
 
