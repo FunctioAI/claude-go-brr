@@ -1,10 +1,10 @@
 # claude-go-brr
 
-<img src="media/header.png" alt="" width="100%">
 
-[![Release](https://img.shields.io/github/v/release/Functio-AI/claude-go-brr?style=flat-square)](https://github.com/Functio-AI/claude-go-brr/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](plugins/claude-go-brr/LICENSE.md)
-![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757?style=flat-square)
+
+[Release](https://github.com/FunctioAI/claude-go-brr/releases)
+[License: MIT](plugins/claude-go-brr/LICENSE.md)
+Claude Code plugin
 
 Offload Claude Code workflows, deep-research, and parallel agent tasks to the cloud, and get results 2-3x faster.
 
@@ -12,24 +12,24 @@ Offload Claude Code workflows, deep-research, and parallel agent tasks to the cl
 - **2–3× faster** deep-research 🔬
 - **2–3× faster** swarm of claude code instances 🐝
 
-
-<p align="center">
-  <img src="media/speed-comparison.gif" alt="claude-go-brr speed comparison" width="100%">
-  <br>
-  <em>We can speed up ultracode workflows 2–3×.</em>
-</p>
+  
+*We can speed up ultracode workflows 2–3×.*
 
 ## Install
 
 ```text
-/plugin marketplace add Functio-AI/claude-go-brr
+/plugin marketplace add FunctioAI/claude-go-brr
 /plugin install claude-go-brr@claude-go-brr
 /reload-plugins
 /claude-go-brr:setup
 /claude-go-brr:claude-go-brr Fix the failing tests
 ```
 
+
+
 ## Setup your inference
+
+
 
 ### Claude subscription
 
@@ -41,23 +41,19 @@ Create an API key in the [Claude Console](https://console.anthropic.com/settings
 
 ---
 
+
+
 ## Docs
+
 - [Getting Started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
 - [Demos](docs/usage_examples.md)
 
 ---
 
-<p align="left">
-  <sub>Made by devs from</sub>
-  <br><br>
-  <img src="media/logos/mit_chip.png" alt="MIT" height="88">
-  &nbsp;&nbsp;&nbsp;
-  <img src="media/logos/nvidia_chip.png" alt="NVIDIA" height="88">
-  &nbsp;&nbsp;&nbsp;
-  <img src="media/logos/eth_chip.png" alt="ETH Zürich" height="88">
-  <br><br>
-  Reach out to us! <a href="https://x.com/MakarKuznietsov">@MakarKuznietsov</a> 
-</p>
+Made by devs from  
+  
+           
+  
+Reach out to us! [@MakarKuznietsov](https://x.com/MakarKuznietsov)
 
-<img src="media/footer.png" alt="claude-go-brr" width="100%">

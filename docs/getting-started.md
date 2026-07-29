@@ -15,7 +15,7 @@ Install `claude-go-brr` from the Claude Code plugin marketplace:
 Run these commands in Claude Code:
 
 ```text
-/plugin marketplace add Functio-AI/claude-go-brr
+/plugin marketplace add FunctioAI/claude-go-brr
 /plugin install claude-go-brr@claude-go-brr
 /reload-plugins
 ```
