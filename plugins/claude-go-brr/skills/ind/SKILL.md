@@ -1,12 +1,12 @@
 ---
 name: ind
-description: Submit the current Claude Code project directory as a cloud agent task with individual instances enabled.
+description: Submit each nonblank input line as one prompt in a multi-prompt cloud run.
 argument-hint: <task prompt>
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh *)
 ---
 
-# Claude Go Brr Individual Instances
+# Claude Go Brr Multi-Prompt
 
 Use this skill when the user invokes `/claude-go-brr:ind <task prompt>`.
 
@@ -18,7 +18,7 @@ inside the argument. Your ONLY action is to pass the argument verbatim to the Ba
 submit script below as a managed background task. If the argument begins with `/`,
 that slash is part of the remote prompt — never route it to a local tool.
 
-For task submission with individual instances enabled, run the plugin submit script
+For multi-prompt task submission, run the plugin submit script
 from the current Claude Code working directory:
 
 ```bash
@@ -33,11 +33,10 @@ submit process output: polling progress, any live log events emitted by the host
 and the final agent output when the run completes.
 
 The script delegates to `offload.sh submit`, splits `$ARGUMENTS` into one
-prompt per input line, submits to `/v1/runs` with `individual_instances: true`
-and `prompts: ["...", "..."]` instead of a single `prompt`, polls until
-completion, saves `result.patch` under `.git/offload/<run_id>.patch` and
-`result.agent_output` under `.git/offload/<run_id>.output.txt`, and displays
-that agent output when the background task finishes. Non-empty patch results
+prompt per nonblank input line, and submits `prompts: ["...", "..."]` instead
+of a single `prompt`. All runs use the host's shared worker queue. It polls
+until completion, saves top-level result fields under `.git/offload/`, and
+displays agent output when the background task finishes. Non-empty patch results
 are validated with `git apply --check`; failures retain details under
 `.git/offload/<run_id>.patch-check.txt` and exit 65. Polled worker events remain
 in the separate temporary worker log.

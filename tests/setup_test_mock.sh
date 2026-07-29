@@ -12,10 +12,11 @@ case "$1 $2" in
       echo 'OFFLOAD_GITHUB_LOGIN=tester'
     } > "$OFFLOAD_CONFIG"
     ;;
-  "github visibility")
-    echo "${OFFLOAD_TEST_REPO_VISIBILITY:-private}"
-    ;;
   "github install-url")
-    echo 'install_url=https://example.test/install'
+    if [[ "${OFFLOAD_TEST_REPO_VISIBILITY:-private}" == "public" ]]; then
+      echo '{"installation_required":false,"access_mode":"anonymous","message":"Repository is public."}'
+    else
+      echo '{"installation_required":true,"install_url":"https://example.test/install"}'
+    fi
     ;;
 esac

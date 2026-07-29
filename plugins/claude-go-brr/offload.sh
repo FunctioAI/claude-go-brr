@@ -5,7 +5,6 @@
 # One-time setup:
 #   offload.sh auth start
 #   offload.sh auth exchange DEVICE_CODE --name my-laptop
-#   offload.sh github visibility --repo OWNER/REPO
 #   offload.sh github install-url --repo OWNER/REPO  # private repos only
 #
 # Project environment variables:
@@ -55,8 +54,17 @@ usage() {
   exit "${1:-0}"
 }
 
+normalize_api_url() {
+  local url
+  url="$(printf '%s' "$1" | sed 's:/*$::')"
+  case "$url" in
+    https://*|http://127.0.0.1:*|http://localhost:*) printf '%s' "$url" ;;
+    *) echo "error: OFFLOAD_API_URL must use HTTPS (HTTP is allowed only for localhost)" >&2; return 78 ;;
+  esac
+}
+
 api_url() {
-  printf '%s' "${OFFLOAD_API_URL:-$DEFAULT_API_URL}" | sed 's:/*$::'
+  normalize_api_url "${OFFLOAD_API_URL:-$DEFAULT_API_URL}"
 }
 
 require_api_key() {
@@ -92,7 +100,6 @@ apply_events_response() {
 
   python3 - "$body_file" "$run_id" "$requested_after" "$state_file" "$log_file" <<'PY'
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -117,79 +124,95 @@ except Exception as exc:
 
 if not isinstance(doc, dict):
     protocol_error("events response must be an object")
-run = doc.get("run")
-if not isinstance(run, dict):
-    protocol_error("events response run must be an object")
-for field in ("run_id", "status", "terminal", "worker_id", "updated_at", "finished_at"):
-    if field not in run:
-        protocol_error(f"events response run.{field} is required")
-if run["run_id"] != requested_run_id:
-    protocol_error(f"events response run_id does not match {requested_run_id}")
-if not isinstance(run["status"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", run["status"]):
-    protocol_error("events response run.status must be a status identifier")
-if not isinstance(run["terminal"], bool):
-    protocol_error("events response run.terminal must be boolean")
-if run["worker_id"] is not None and not isinstance(run["worker_id"], str):
-    protocol_error("events response run.worker_id must be a string or null")
-if isinstance(run["updated_at"], bool) or not isinstance(run["updated_at"], (int, float)) or not math.isfinite(run["updated_at"]):
-    protocol_error("events response run.updated_at must be a finite number")
-if run["finished_at"] is not None and (isinstance(run["finished_at"], bool) or not isinstance(run["finished_at"], (int, float)) or not math.isfinite(run["finished_at"])):
-    protocol_error("events response run.finished_at must be a finite number or null")
-
-batches = doc.get("batches")
-last_seq = doc.get("last_seq")
-has_more = doc.get("has_more")
-if not isinstance(batches, list):
-    protocol_error("events response batches must be an array")
-if not integer(last_seq) or last_seq < 0:
-    protocol_error("events response last_seq must be a non-negative integer")
-if not isinstance(has_more, bool):
-    protocol_error("events response has_more must be boolean")
-if run["terminal"]:
-    if "result" not in doc or not isinstance(doc["result"], dict):
-        protocol_error("terminal events response result must be an object")
-    result = doc["result"]
-    if "agent_output" not in result or not isinstance(result["agent_output"], str):
-        protocol_error("terminal events response result.agent_output must be a string")
-    if "patch" in result and not isinstance(result["patch"], str):
-        protocol_error("terminal events response result.patch must be a string")
-    if "prompt_results" in result and not isinstance(result["prompt_results"], list):
-        protocol_error("terminal events response result.prompt_results must be an array")
-elif "result" in doc:
-    protocol_error("non-terminal events response must not include result")
-
 new_events = []
-previous_seq = requested_after
-for batch_index, batch in enumerate(batches):
-    if not isinstance(batch, dict):
-        protocol_error(f"batch {batch_index} must be an object")
-    seq = batch.get("seq")
-    if not integer(seq) or seq != previous_seq + 1:
-        protocol_error(f"batch {batch_index} seq must be contiguous after {previous_seq}")
-    events = batch.get("events")
-    if not isinstance(events, list):
-        protocol_error(f"batch {seq} events must be an array")
+legacy_status = "-"
+legacy_terminal = False
+legacy_has_more = False
+
+if isinstance(doc.get("events"), list) and "next_cursor" in doc:
+    shape = "current"
+    next_cursor = doc["next_cursor"]
+    logs_truncated = doc.get("logs_truncated")
+    if not integer(next_cursor) or not requested_after <= next_cursor <= 9223372036854775807:
+        protocol_error("events response next_cursor must be a valid cursor not behind after")
+    if not isinstance(logs_truncated, bool):
+        protocol_error("events response logs_truncated must be boolean")
+    previous_key = None
+    previous_seq = None
     prompt_indexes = set()
-    batch_events = []
-    for event_index, event in enumerate(events):
+    for event_index, event in enumerate(doc["events"]):
         if not isinstance(event, dict):
-            protocol_error(f"batch {seq} event {event_index} must be an object")
+            protocol_error(f"event {event_index} must be an object")
+        seq = event.get("seq")
         prompt_index = event.get("prompt_index")
         text = event.get("text")
+        if not integer(seq) or not requested_after < seq <= next_cursor:
+            protocol_error(f"event {event_index} seq must be after the requested cursor and at most next_cursor")
         if not integer(prompt_index) or prompt_index < 0:
-            protocol_error(f"batch {seq} event {event_index} prompt_index must be a non-negative integer")
+            protocol_error(f"event {event_index} prompt_index must be a non-negative integer")
+        if not isinstance(text, str):
+            protocol_error(f"event {event_index} text must be a string")
+        key = (seq, prompt_index)
+        if previous_key is not None and key <= previous_key:
+            protocol_error("events must be ordered by seq, then prompt_index")
+        if seq != previous_seq:
+            prompt_indexes = set()
+            previous_seq = seq
         if prompt_index in prompt_indexes:
             protocol_error(f"batch {seq} contains duplicate prompt_index {prompt_index}")
-        if not isinstance(text, str):
-            protocol_error(f"batch {seq} event {event_index} text must be a string")
         prompt_indexes.add(prompt_index)
-        batch_events.append({"seq": seq, "prompt_index": prompt_index, "text": text})
-    new_events.extend(batch_events)
-    previous_seq = seq
-
-expected_last_seq = batches[-1]["seq"] if batches else requested_after
-if last_seq != expected_last_seq:
-    protocol_error(f"events response last_seq must equal {expected_last_seq}")
+        previous_key = key
+        new_events.append({"seq": seq, "prompt_index": prompt_index, "text": text})
+    if doc["events"] and next_cursor != doc["events"][-1]["seq"]:
+        protocol_error("events response next_cursor must equal the last returned batch seq")
+    if not doc["events"] and next_cursor != requested_after:
+        protocol_error("empty events response must preserve the requested cursor")
+elif isinstance(doc.get("batches"), list) and "last_seq" in doc:
+    shape = "legacy"
+    run = doc.get("run")
+    if not isinstance(run, dict) or run.get("run_id") != requested_run_id:
+        protocol_error("legacy events response run_id does not match the requested run")
+    legacy_status = run.get("status")
+    legacy_terminal = run.get("terminal")
+    legacy_has_more = doc.get("has_more")
+    if not isinstance(legacy_status, str) or not isinstance(legacy_terminal, bool):
+        protocol_error("legacy events response run status/terminal is invalid")
+    if not isinstance(legacy_has_more, bool):
+        protocol_error("legacy events response has_more must be boolean")
+    next_cursor = doc["last_seq"]
+    logs_truncated = bool(doc.get("logs_truncated", False))
+    if not integer(next_cursor) or next_cursor < requested_after:
+        protocol_error("legacy events response last_seq must not be behind after")
+    previous_seq = requested_after
+    for batch_index, batch in enumerate(doc["batches"]):
+        if not isinstance(batch, dict):
+            protocol_error(f"batch {batch_index} must be an object")
+        seq = batch.get("seq")
+        events = batch.get("events")
+        if not integer(seq) or seq != previous_seq + 1:
+            protocol_error(f"batch {batch_index} seq must be contiguous after {previous_seq}")
+        if not isinstance(events, list):
+            protocol_error(f"batch {seq} events must be an array")
+        prompt_indexes = set()
+        for event_index, event in enumerate(events):
+            if not isinstance(event, dict):
+                protocol_error(f"batch {seq} event {event_index} must be an object")
+            prompt_index = event.get("prompt_index")
+            text = event.get("text")
+            if not integer(prompt_index) or prompt_index < 0:
+                protocol_error(f"batch {seq} event {event_index} prompt_index must be a non-negative integer")
+            if prompt_index in prompt_indexes:
+                protocol_error(f"batch {seq} contains duplicate prompt_index {prompt_index}")
+            if not isinstance(text, str):
+                protocol_error(f"batch {seq} event {event_index} text must be a string")
+            prompt_indexes.add(prompt_index)
+            new_events.append({"seq": seq, "prompt_index": prompt_index, "text": text})
+        previous_seq = seq
+    expected_cursor = doc["batches"][-1]["seq"] if doc["batches"] else requested_after
+    if next_cursor != expected_cursor:
+        protocol_error(f"legacy events response last_seq must equal {expected_cursor}")
+else:
+    protocol_error("unknown events response shape")
 
 try:
     state = json.loads(state_path.read_text()) if state_path.exists() else {"after": 0, "events": []}
@@ -201,11 +224,11 @@ except Exception as exc:
     protocol_error(f"local polling state is invalid: {exc}")
 
 if committed_after == requested_after:
-    state = {"after": last_seq, "events": committed_events + new_events}
+    state = {"after": next_cursor, "events": committed_events + new_events}
     temporary_state = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
     temporary_state.write_text(json.dumps(state))
     os.replace(temporary_state, state_path)
-elif committed_after == last_seq and batches:
+elif committed_after == next_cursor and new_events:
     # A previous application committed before its caller observed success.
     # Re-render the committed state without duplicating sequence batches.
     state = {"after": committed_after, "events": committed_events}
@@ -227,15 +250,79 @@ if not rendered.startswith(committed_log):
 with log_path.open("a") as stream:
     stream.write(rendered[len(committed_log):])
 
-print(f"{last_seq}\t{run['status']}\t{int(run['terminal'])}\t{int(has_more)}")
+print(f"{next_cursor}\t{shape}\t{int(logs_truncated)}\t{legacy_status}\t{int(legacy_terminal)}\t{int(legacy_has_more)}")
 PY
+}
+
+parse_run_record() {
+  local body_file="$1" run_id="$2"
+  python3 - "$body_file" "$run_id" <<'PY'
+import json
+import math
+from pathlib import Path
+import re
+import sys
+
+doc = json.loads(Path(sys.argv[1]).read_text())
+if not isinstance(doc, dict) or doc.get("run_id") != sys.argv[2]:
+    print("protocol error: run record does not match requested run_id", file=sys.stderr)
+    raise SystemExit(65)
+status = doc.get("status")
+finished_at = doc.get("finished_at")
+claim_attempts = doc.get("claim_attempts", 0)
+latest_cursor = doc.get("latest_log_cursor", 0)
+logs_truncated = doc.get("logs_truncated", False)
+if not isinstance(status, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", status):
+    print("protocol error: run status must be an identifier", file=sys.stderr)
+    raise SystemExit(65)
+if finished_at is not None and (isinstance(finished_at, bool) or not isinstance(finished_at, (int, float)) or not math.isfinite(finished_at)):
+    print("protocol error: run finished_at must be a finite number or null", file=sys.stderr)
+    raise SystemExit(65)
+if isinstance(claim_attempts, bool) or not isinstance(claim_attempts, int) or claim_attempts < 0:
+    print("protocol error: run claim_attempts must be a non-negative integer", file=sys.stderr)
+    raise SystemExit(65)
+if isinstance(latest_cursor, bool) or not isinstance(latest_cursor, int) or latest_cursor < 0:
+    print("protocol error: run latest_log_cursor must be a non-negative integer", file=sys.stderr)
+    raise SystemExit(65)
+if not isinstance(logs_truncated, bool):
+    print("protocol error: run logs_truncated must be boolean", file=sys.stderr)
+    raise SystemExit(65)
+live_logs = doc.get("live_logs")
+logs_complete = live_logs.get("logs_complete") if isinstance(live_logs, dict) else None
+logs_complete_value = int(logs_complete) if isinstance(logs_complete, bool) else -1
+print(f"{status}\t{int(finished_at is not None)}\t{claim_attempts}\t{latest_cursor}\t{int(logs_truncated)}\t{logs_complete_value}")
+PY
+}
+
+reset_live_state() {
+  local state_file="$1" log_file="$2"
+  python3 - "$state_file" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+temporary.write_text(json.dumps({"after": 0, "events": []}))
+os.replace(temporary, path)
+PY
+  : > "$log_file"
 }
 
 json_error_message() {
   python3 -c 'import json, pathlib, sys
 try:
     doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
-    print(doc.get("error", "") if isinstance(doc, dict) else "")
+    if not isinstance(doc, dict):
+        print("")
+    else:
+        error = doc.get("error", "")
+        code = doc.get("code", "")
+        if isinstance(error, dict):
+            code = error.get("code", code)
+            error = error.get("message", "")
+        print(": ".join(str(value) for value in (code, error) if value))
 except Exception:
     print("")' "$1"
 }
@@ -403,19 +490,35 @@ project_folder_id() {
   python3 -c 'import hashlib, sys; print(f"{sys.argv[2]}--{hashlib.sha256(chr(0).join(sys.argv[1:]).encode()).hexdigest()}")' "$1" "$2" "$3"
 }
 
+cli_login_start() {
+  local api="$1" resp http_code body
+  if ! resp="$(curl -sS -X POST "$api/v1/auth/cli/start" -H "Accept: application/json" -H "Content-Type: application/json" -d '{}' -w $'\n%{http_code}')"; then
+    echo "error: login start connection failed" >&2
+    return 1
+  fi
+  http_code="${resp##*$'\n'}"
+  body="${resp%$'\n'*}"
+  if [[ "$http_code" != "200" ]]; then
+    [[ "$http_code" != "503" ]] || echo "error: GitHub OAuth or the host public URL is not configured" >&2
+    echo "error: login start failed with HTTP $http_code" >&2
+    return 1
+  fi
+  printf '%s' "$body"
+}
+
 auth_start() {
   local api
   api="$(api_url)"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --api-url) api="${2%/}"; shift 2 ;;
+      --api-url) api="$(normalize_api_url "$2")"; shift 2 ;;
       -h|--help) echo "usage: $0 auth start [--api-url URL]"; exit 0 ;;
       *) echo "unknown flag: $1" >&2; exit 64 ;;
     esac
   done
 
   local resp login_url device_code
-  resp="$(curl -fsS -X POST "$api/v1/auth/cli/start" -H "Content-Type: application/json" -d '{}')"
+  resp="$(cli_login_start "$api")"
   login_url="$(printf '%s' "$resp" | json_field login_url)"
   device_code="$(printf '%s' "$resp" | json_field device_code)"
   printf '%s\n' "$resp"
@@ -442,12 +545,12 @@ save_config() {
 }
 
 auth_exchange() {
-  local api name device_code resp token github_login
+  local api name device_code resp token github_login exchange_code exchange_dir header_file interval payload retry_delay
   api="$(api_url)"
   name="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo client)"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --api-url) api="${2%/}"; shift 2 ;;
+      --api-url) api="$(normalize_api_url "$2")"; shift 2 ;;
       --name) name="$2"; shift 2 ;;
       -h|--help) echo "usage: $0 auth exchange DEVICE_CODE [--name NAME] [--api-url URL]"; exit 0 ;;
       -* ) echo "unknown flag: $1" >&2; exit 64 ;;
@@ -456,13 +559,44 @@ auth_exchange() {
   done
   [[ -n "${device_code:-}" ]] || { echo "error: missing DEVICE_CODE" >&2; exit 64; }
 
-  resp="$(python3 - "$device_code" "$name" <<'PY' | curl -fsS -X POST "$api/v1/auth/cli/exchange" -H "Content-Type: application/json" -d @-
+  payload="$(python3 - "$device_code" "$name" <<'PY'
 import json
 import sys
 
-print(json.dumps({"device_code": sys.argv[1], "name": sys.argv[2]}))
+print(json.dumps({"device_code": sys.argv[1], "name": sys.argv[2], "scopes": "runs:read,runs:write,github:setup,env:read"}))
 PY
 )"
+  exchange_dir="$(mktemp -d "${TMPDIR:-/tmp}/offload-auth.XXXXXX")"
+  header_file="$exchange_dir/headers"
+  trap "rm -rf $(printf '%q' "$exchange_dir")" EXIT
+  interval=3
+  while true; do
+    : > "$header_file"
+    if ! exchange_code="$(curl -sS -X POST "$api/v1/auth/cli/exchange" -H "Accept: application/json" -H "Content-Type: application/json" --dump-header "$header_file" --output "$exchange_dir/body" --write-out '%{http_code}' -d "$payload")"; then
+      echo "error: login exchange connection failed" >&2
+      exit 1
+    fi
+    resp="$(<"$exchange_dir/body")"
+    case "$exchange_code" in
+      200|201) break ;;
+      202)
+        interval="$(printf '%s' "$resp" | json_field interval)"
+        [[ "$interval" =~ ^[0-9]+$ && "$interval" -gt 0 ]] || interval=3
+        echo "> GitHub authorization is pending; retrying after ${interval}s" >&2
+        sleep "$interval"
+        ;;
+      429)
+        retry_delay="$(retry_after_seconds "$header_file")"
+        [[ -n "$retry_delay" ]] || retry_delay="$interval"
+        echo "> login exchange rate limited; retrying after ${retry_delay}s" >&2
+        sleep "$retry_delay"
+        ;;
+      404) echo "error: invalid login device code" >&2; exit 1 ;;
+      409) echo "error: login device code was already consumed" >&2; exit 1 ;;
+      410) echo "error: login device code expired; start login again" >&2; exit 1 ;;
+      *) echo "error: login exchange failed with HTTP $exchange_code" >&2; exit 1 ;;
+    esac
+  done
   token="$(printf '%s' "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("token") or d.get("api_key") or d.get("client_key") or d.get("offload_api_key") or "")')"
   github_login="$(printf '%s' "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); u=d.get("user") or {}; print(d.get("github_login") or d.get("user_login") or d.get("login") or d.get("account_login") or u.get("login") or "")')"
   [[ -n "$token" ]] || { echo "error: exchange response did not include a token" >&2; printf '%s\n' "$resp" >&2; exit 1; }
@@ -475,14 +609,14 @@ auth_login() {
   name="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo client)"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --api-url) api="${2%/}"; shift 2 ;;
+      --api-url) api="$(normalize_api_url "$2")"; shift 2 ;;
       --name) name="$2"; shift 2 ;;
       -h|--help) echo "usage: $0 auth login [--name NAME] [--api-url URL]"; exit 0 ;;
       *) echo "unknown flag: $1" >&2; exit 64 ;;
     esac
   done
 
-  start_resp="$(curl -fsS -X POST "$api/v1/auth/cli/start" -H "Content-Type: application/json" -d '{}')"
+  start_resp="$(cli_login_start "$api")"
   login_url="$(printf '%s' "$start_resp" | json_field login_url)"
   device_code="$(printf '%s' "$start_resp" | json_field device_code)"
   [[ -n "$login_url" && -n "$device_code" ]] || { echo "error: auth start response missing login_url or device_code" >&2; printf '%s\n' "$start_resp" >&2; exit 1; }
@@ -508,7 +642,7 @@ auth_cmd() {
 }
 
 github_install_url() {
-  local owner repo repo_arg remote api resp install_url
+  local owner repo repo_arg remote api resp install_url payload http_code install_dir retry_delay error_message
   remote="${OFFLOAD_REMOTE:-}"
   api="$(api_url)"
   while [[ $# -gt 0 ]]; do
@@ -533,62 +667,30 @@ github_install_url() {
     repo="$SELECTED_REPO_NAME"
   fi
   require_api_key
-  resp="$(python3 - "$owner" "$repo" <<'PY' | curl -fsS -X POST "$api/v1/github/app/install-url" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Content-Type: application/json" -d @-
+  payload="$(python3 - "$owner" "$repo" <<'PY'
 import json
 import sys
 
 print(json.dumps({"owner": sys.argv[1], "repo": sys.argv[2]}))
 PY
 )"
+  install_dir="$(mktemp -d "${TMPDIR:-/tmp}/offload-github.XXXXXX")"
+  trap "rm -rf $(printf '%q' "$install_dir")" EXIT
+  if ! http_code="$(curl -sS -X POST "$api/v1/github/app/install-url" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" -H "Content-Type: application/json" --dump-header "$install_dir/headers" --output "$install_dir/body" --write-out '%{http_code}' -d "$payload")"; then
+    echo "error: repository access request failed" >&2
+    exit 1
+  fi
+  resp="$(<"$install_dir/body")"
+  if [[ "$http_code" != "200" ]]; then
+    retry_delay="$(retry_after_seconds "$install_dir/headers")"
+    error_message="$(json_error_message "$install_dir/body")"
+    echo "error: repository access request failed with HTTP $http_code${error_message:+: $error_message}${retry_delay:+ (Retry-After: ${retry_delay}s)}" >&2
+    exit 1
+  fi
   install_url="$(printf '%s' "$resp" | json_field install_url)"
   printf '%s\n' "$resp"
   [[ -n "$install_url" ]] && echo "install_url=$install_url"
-}
-
-github_visibility() {
-  local owner repo repo_arg remote api resp http_code body visibility
-  remote="${OFFLOAD_REMOTE:-}"
-  api="${OFFLOAD_GITHUB_API_URL:-https://api.github.com}"
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --repo) repo_arg="$2"; shift 2 ;;
-      --owner) owner="$2"; shift 2 ;;
-      --name|--repo-name) repo="$2"; shift 2 ;;
-      --remote) OFFLOAD_REMOTE="$2"; remote="$2"; shift 2 ;;
-      -h|--help) echo "usage: $0 github visibility [--repo OWNER/REPO] [--remote REMOTE]"; exit 0 ;;
-      *) echo "unknown flag: $1" >&2; exit 64 ;;
-    esac
-  done
-  if [[ -n "${repo_arg:-}" ]]; then
-    owner="${repo_arg%%/*}"
-    repo="${repo_arg#*/}"
-  fi
-  if [[ -z "${owner:-}" || -z "${repo:-}" || "$owner" == "$repo" ]]; then
-    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "error: --repo OWNER/REPO is required outside a git repo" >&2; exit 65; }
-    [[ -n "$remote" ]] && OFFLOAD_REMOTE="$remote"
-    select_github_remote
-    owner="$SELECTED_REPO_OWNER"
-    repo="$SELECTED_REPO_NAME"
-  fi
-
-  if ! resp="$(curl -sS -L -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -w $'\n%{http_code}' "${api%/}/repos/$owner/$repo")"; then
-    echo "unknown"
-    return 1
-  fi
-  http_code="${resp##*$'\n'}"
-  body="${resp%$'\n'*}"
-  if [[ "$http_code" == 2* ]]; then
-    visibility="$(printf '%s' "$body" | python3 -c 'import json, sys; value = json.load(sys.stdin).get("private"); print("private" if value is True else "public" if value is False else "unknown")' 2>/dev/null || true)"
-    printf '%s\n' "${visibility:-unknown}"
-    [[ "$visibility" != "unknown" ]]
-    return
-  fi
-  if [[ "$http_code" == "404" ]]; then
-    echo "private"
-    return
-  fi
-  echo "unknown"
-  return 1
+  return 0
 }
 
 github_cmd() {
@@ -596,15 +698,14 @@ github_cmd() {
   [[ $# -gt 0 ]] && shift
   case "$sub" in
     install-url) github_install_url "$@" ;;
-    visibility) github_visibility "$@" ;;
-    -h|--help|"") echo "usage: $0 github {visibility|install-url} [--repo OWNER/REPO]"; exit 0 ;;
+    -h|--help|"") echo "usage: $0 github install-url [--repo OWNER/REPO]"; exit 0 ;;
     *) echo "unknown github command: $sub" >&2; exit 64 ;;
   esac
 }
 
 runs_list() {
   require_api_key
-  curl -fsS "$(api_url)/v1/runs" -H "Authorization: Bearer $OFFLOAD_API_KEY"
+  curl -fsS "$(api_url)/v1/runs" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json"
   echo
 }
 
@@ -613,30 +714,49 @@ run_status() {
   [[ -n "$run_id" ]] || { echo "usage: $0 status RUN_ID" >&2; exit 64; }
   require_run_id "$run_id"
   require_api_key
-  curl -fsS "$(api_url)/v1/runs/$run_id" -H "Authorization: Bearer $OFFLOAD_API_KEY"
+  curl -fsS "$(api_url)/v1/runs/$run_id" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json"
   echo
 }
 
 save_run_result() {
-  local body_file="$1" patch_file="$2" output_file="$3"
+  local run_body_file="$1" events_body_file="$2" patch_file="$3" output_file="$4"
 
-  python3 - "$body_file" "$patch_file" "$output_file" <<'PY'
+  python3 - "$run_body_file" "$events_body_file" "$patch_file" "$output_file" <<'PY'
 import json
 from pathlib import Path
 import sys
 
-body_path, patch_path, output_path = map(Path, sys.argv[1:])
-doc = json.loads(body_path.read_text())
-if not doc["run"]["terminal"] or not isinstance(doc.get("result"), dict):
-    print("protocol error: attempted to consume a non-terminal run result", file=sys.stderr)
+run_body_path, events_body_path, patch_path, output_path = map(Path, sys.argv[1:])
+run_doc = json.loads(run_body_path.read_text())
+event_doc = json.loads(events_body_path.read_text()) if events_body_path.exists() and events_body_path.stat().st_size else {}
+result = run_doc
+if not any(field in result for field in ("patch", "agent_output", "prompt_results")) and isinstance(event_doc.get("result"), dict):
+    result = event_doc["result"]
+patch = result.get("patch")
+agent_output = result.get("agent_output")
+if patch is not None and not isinstance(patch, str):
+    print("protocol error: run patch must be a string", file=sys.stderr)
     raise SystemExit(65)
-result = doc["result"]
-patch = result.get("patch", "")
-if not isinstance(patch, str):
-    print("protocol error: terminal result.patch must be a string", file=sys.stderr)
+if agent_output is not None and not isinstance(agent_output, str):
+    print("protocol error: run agent_output must be a string", file=sys.stderr)
     raise SystemExit(65)
-patch_path.write_text(patch)
-output_path.write_text(result["agent_output"])
+if patch is not None:
+    patch_path.write_text(patch)
+if agent_output is not None:
+    output_path.write_text(agent_output)
+print(f"{int(patch is not None)}\t{int(agent_output is not None)}")
+PY
+}
+
+print_safe_text_file() {
+  python3 - "$1" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+text = Path(sys.argv[1]).read_text()
+text = re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
+print("".join(char for char in text if char in "\n\t" or ord(char) >= 32))
 PY
 }
 
@@ -666,12 +786,6 @@ else:
 ' "$folder_id"
 }
 
-print_no_env_metadata() {
-  local folder_id="$1"
-  echo "folder_id=$folder_id"
-  echo "No env vars configured (count=0)."
-}
-
 env_cmd() {
   local folder resp http_code body settings_url
   folder="$PWD"
@@ -687,16 +801,14 @@ env_cmd() {
   resolve_project_context "$folder"
   settings_url="$(env_settings_url "$PROJECT_FOLDER_ID")"
 
-  if ! resp="$(curl -sS -H "Authorization: Bearer $OFFLOAD_API_KEY" -w $'\n%{http_code}' "$(api_url)/v1/folders/$PROJECT_FOLDER_ID/env")"; then
+  if ! resp="$(curl -sS -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" -w $'\n%{http_code}' "$(api_url)/v1/folders/$PROJECT_FOLDER_ID/env")"; then
     echo "error: failed to fetch env metadata" >&2
     exit 1
   fi
   http_code="${resp##*$'\n'}"
   body="${resp%$'\n'*}"
 
-  if [[ "$http_code" == "404" || -z "$body" ]]; then
-    print_no_env_metadata "$PROJECT_FOLDER_ID"
-  elif [[ "$http_code" == 2* ]]; then
+  if [[ "$http_code" == 2* && -n "$body" ]]; then
     printf '%s' "$body" | print_env_metadata "$PROJECT_FOLDER_ID"
   else
     echo "error: env metadata request failed with HTTP $http_code" >&2
@@ -709,16 +821,18 @@ env_cmd() {
 }
 
 submit_cmd() {
-  local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed status log_file log_prefix
-  local after apply_meta event_code error_message has_more header_file next_after poll_dir remaining retry_attempt retry_delay started state_file terminal
+  local folder wait multi_prompt prompt branch dirty_files git_ref body resp run_id elapsed status log_file log_prefix
+  local after apply_meta claim_attempts error_message event_after_before event_code event_logs_truncated event_shape has_patch has_output header_file
+  local latest_cursor legacy_has_more legacy_status legacy_terminal live_events_unavailable logs_complete next_after
+  local poll_dir remaining remembered_claim_attempts retry_attempt retry_delay run_code run_logs_truncated run_meta started state_file terminal warned_logs_truncated
   folder="$PWD"
   wait=1
-  individual_instances=0
+  multi_prompt=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -d|--dir) folder="$2"; shift 2 ;;
       --no-wait) wait=0; shift ;;
-      --individual-instances) individual_instances=1; shift ;;
+      --individual-instances) multi_prompt=1; shift ;;
       -h|--help) usage 0 ;;
       --) shift; break ;;
       -*) echo "unknown flag: $1" >&2; usage 64 ;;
@@ -730,15 +844,13 @@ submit_cmd() {
   [[ -n "$prompt" ]] || { echo "error: no task prompt given" >&2; usage 64; }
   require_api_key
 
-  local toplevel rel repo_owner repo_name repo_clone_url folder_id remote
+  local toplevel rel repo_owner repo_name folder_id remote
   resolve_project_context "$folder"
-  folder="$PROJECT_FOLDER"
   toplevel="$PROJECT_TOPLEVEL"
   rel="$PROJECT_REL"
   remote="$PROJECT_REMOTE"
   repo_owner="$PROJECT_REPO_OWNER"
   repo_name="$PROJECT_REPO_NAME"
-  repo_clone_url="$PROJECT_REPO_CLONE_URL"
   folder_id="$PROJECT_FOLDER_ID"
 
   if ! branch="$(git symbolic-ref --quiet --short HEAD)"; then
@@ -754,31 +866,70 @@ submit_cmd() {
   git_ref="$branch"
   echo "> using GitHub ref $remote/$git_ref"
 
-  body="$(python3 - "$folder_id" "$repo_owner" "$repo_name" "$rel" "$git_ref" "$prompt" "$individual_instances" <<'PY'
+  body="$(python3 - "$folder_id" "$repo_owner" "$repo_name" "$rel" "$git_ref" "$prompt" "$multi_prompt" <<'PY'
 import json
+import re
 import sys
 
+folder_id, owner, repo, folder_path, git_ref, prompt, multi_prompt = sys.argv[1:]
+identifier = re.compile(r"[A-Za-z0-9_.-]+")
+if not 1 <= len(folder_id) <= 200 or not identifier.fullmatch(folder_id):
+    raise SystemExit("error: folder_id is not valid for the offload protocol")
+if not identifier.fullmatch(owner) or not identifier.fullmatch(repo):
+    raise SystemExit("error: GitHub owner/repo contains unsupported characters")
+if folder_path.startswith("/") or any(part in ("", ".", "..") for part in folder_path.split("/") if folder_path):
+    raise SystemExit("error: folder_path is not normalized and repository-relative")
+if any(ord(char) < 32 or ord(char) == 127 for char in folder_path):
+    raise SystemExit("error: folder_path contains control characters")
+
 body = {
-    "folder_id": sys.argv[1],
+    "folder_id": folder_id,
     "provider": "github",
-    "owner": sys.argv[2],
-    "repo": sys.argv[3],
-    "folder_path": sys.argv[4],
-    "git_ref": sys.argv[5],
+    "owner": owner,
+    "repo": repo,
+    "folder_path": folder_path,
+    "git_ref": git_ref,
 }
-if sys.argv[7] == "1":
-    body["individual_instances"] = True
-    body["prompts"] = sys.argv[6].splitlines()
+if multi_prompt == "1":
+    prompts = prompt.splitlines()
+    if not prompts or len(prompts) > 128 or any(not item.strip() for item in prompts):
+        raise SystemExit("error: multi-prompt input must contain 1-128 nonblank lines")
+    if any(len(item.encode()) > 256 * 1024 for item in prompts):
+        raise SystemExit("error: a prompt exceeds the 256 KiB host limit")
+    body["prompts"] = prompts
 else:
-    body["prompt"] = sys.argv[6]
-print(json.dumps(body))
+    if not prompt.strip():
+        raise SystemExit("error: prompt must not be blank")
+    if len(prompt.encode()) > 256 * 1024:
+        raise SystemExit("error: prompt exceeds the 256 KiB host limit")
+    body["prompt"] = prompt
+encoded = json.dumps(body)
+if len(encoded.encode()) > 8 * 1024 * 1024:
+    raise SystemExit("error: submission exceeds the 8 MiB host limit")
+print(encoded)
 PY
 )"
 
   echo "> submitting run (folder_id=$folder_id ref=$git_ref)..."
-  resp="$(curl -fsS -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Content-Type: application/json" -X POST "$(api_url)/v1/runs" -d "$body")"
+  poll_dir="$(mktemp -d "${TMPDIR:-/tmp}/offload-client.XXXXXX")"
+  header_file="$poll_dir/headers"
+  state_file="$poll_dir/state.json"
+  trap 'rm -rf "$poll_dir"' EXIT
+  trap 'exit 130' INT TERM HUP
+  if ! run_code="$(curl -sS -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" -H "Content-Type: application/json" -X POST --dump-header "$header_file" --output "$poll_dir/submit-body" --write-out '%{http_code}' "$(api_url)/v1/runs" -d "$body")"; then
+    echo "error: submission connection failed; the outcome is uncertain and retrying may create a duplicate run" >&2
+    exit 1
+  fi
+  if [[ "$run_code" != "202" ]]; then
+    error_message="$(json_error_message "$poll_dir/submit-body")"
+    retry_delay="$(retry_after_seconds "$header_file")"
+    echo "error: submission failed with HTTP $run_code${error_message:+: $error_message}${retry_delay:+ (Retry-After: ${retry_delay}s)}" >&2
+    exit 1
+  fi
+  resp="$(<"$poll_dir/submit-body")"
   run_id="$(printf '%s' "$resp" | json_field run_id)"
-  [[ -n "$run_id" ]] || { echo "error: submit response missing run_id" >&2; printf '%s\n' "$resp" >&2; exit 1; }
+  status="$(printf '%s' "$resp" | json_field status)"
+  [[ -n "$run_id" && "$status" == "queued" ]] || { echo "protocol error: submit response must contain run_id and status=queued" >&2; exit 65; }
   require_run_id "$run_id"
   echo "  run_id=$run_id"
 
@@ -793,125 +944,192 @@ PY
   printf '  To see live Claude Code output, run: tail -f %q\n' "$log_file"
 
   echo "> waiting for completion..."
-  poll_dir="$(mktemp -d "${TMPDIR:-/tmp}/offload-poll-${log_prefix}.XXXXXX")"
-  header_file="$poll_dir/headers"
-  state_file="$poll_dir/state.json"
-  trap 'rm -rf "$poll_dir"' EXIT
-  trap 'exit 130' INT TERM HUP
   after=0
+  remembered_claim_attempts=0
+  live_events_unavailable=0
+  warned_logs_truncated=0
   retry_attempt=0
   started=$SECONDS
   while (( SECONDS - started < POLL_TIMEOUT )); do
     remaining=$(( POLL_TIMEOUT - (SECONDS - started) ))
     : > "$header_file"
-    : > "$poll_dir/body"
-    if ! event_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id/events?after=$after&limit_bytes=262144")"; then
+    : > "$poll_dir/run-body"
+    if ! run_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/run-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id")"; then
       retry_attempt=$(( retry_attempt + 1 ))
       retry_delay="$(bounded_backoff "$retry_attempt")"
-      echo "> polling request failed; retrying after ${retry_delay}s with after=$after" >&2
+      echo "> run-status request failed; retrying after ${retry_delay}s" >&2
       poll_sleep "$retry_delay" "$started"
       continue
     fi
-
-    case "$event_code" in
+    case "$run_code" in
       200)
-        apply_meta="$(apply_events_response "$poll_dir/body" "$run_id" "$after" "$state_file" "$log_file")" || exit $?
-        IFS=$'\t' read -r next_after status terminal has_more <<<"$apply_meta"
-        after="$next_after"
-        retry_attempt=0
-        elapsed=$(( SECONDS - started ))
-        printf '  ...%s (%ds)\r' "$status" "$elapsed"
-        if [[ "$has_more" -eq 1 ]]; then
-          continue
-        fi
-        if [[ "$terminal" -eq 1 ]]; then
-          echo
-          if [[ "$status" == "ok_patch" || "$status" == "ok" || "$status" == "ok_no_pr" ]]; then
-            local out_dir patch_file output_file patch_check_file patch_check_failed
-            out_dir="$(git rev-parse --git-path offload)"
-            mkdir -p "$out_dir"
-            out_dir="$(cd "$out_dir" && pwd)"
-            patch_file="$out_dir/$run_id.patch"
-            output_file="$out_dir/$run_id.output.txt"
-            patch_check_file="$out_dir/$run_id.patch-check.txt"
-            save_run_result "$poll_dir/body" "$patch_file" "$output_file"
-            echo "OK $status done."
-            patch_check_failed=0
-            if [[ "$status" == "ok_patch" && -s "$patch_file" ]]; then
-              if git -C "$toplevel" apply --check "$patch_file" >"$patch_check_file" 2>&1; then
-                rm -f "$patch_check_file"
-                echo "  patch:  $patch_file"
-                echo "  apply:  git apply $patch_file"
-              else
-                patch_check_failed=1
-                echo "  patch:  $patch_file"
-                echo "  check:  failed (details: $patch_check_file)"
-              fi
-            elif [[ "$status" == "ok_patch" ]]; then
-              rm -f "$patch_check_file"
-              echo "  patch:  no changes"
-            fi
-            echo "  output: $output_file"
-            echo "  Claude Code output on the worker: $log_file"
-            echo
-            echo "Agent output:"
-            printf '%s\n' "$(<"$output_file")"
-            if [[ "$patch_check_failed" -ne 0 ]]; then
-              echo "x returned patch failed git apply --check; it may be corrupted in transport or not match this checkout" >&2
-              echo "  patch: $patch_file" >&2
-              echo "  check: $patch_check_file" >&2
-              exit 65
-            fi
-            exit 0
-          fi
-          if [[ "$status" == "env_failed" ]]; then
-            echo "x run $status - project environment injection failed; manage values in the browser: $(env_settings_url "$folder_id")" >&2
-          else
-            echo "x run $status - inspect Claude Code output on the worker: $log_file" >&2
-          fi
-          exit 1
-        fi
-        poll_sleep "$POLL_INTERVAL" "$started"
-        ;;
-      400)
-        error_message="$(json_error_message "$poll_dir/body")"
-        echo "protocol error: polling request rejected (HTTP 400${error_message:+: $error_message})" >&2
-        exit 65
+        run_meta="$(parse_run_record "$poll_dir/run-body" "$run_id")" || exit $?
+        IFS=$'\t' read -r status terminal claim_attempts latest_cursor run_logs_truncated logs_complete <<<"$run_meta"
         ;;
       401)
-        error_message="$(json_error_message "$poll_dir/body")"
-        echo "authentication error: polling API key rejected (HTTP 401${error_message:+: $error_message})" >&2
+        error_message="$(json_error_message "$poll_dir/run-body")"
+        echo "authentication error: run API key rejected (HTTP 401${error_message:+: $error_message})" >&2
         exit 77
         ;;
       403)
-        error_message="$(json_error_message "$poll_dir/body")"
+        error_message="$(json_error_message "$poll_dir/run-body")"
         echo "authorization error: cannot access run $run_id (HTTP 403${error_message:+: $error_message})" >&2
         exit 77
         ;;
       404)
-        error_message="$(json_error_message "$poll_dir/body")"
+        error_message="$(json_error_message "$poll_dir/run-body")"
         echo "not-found protocol error: unknown run_id $run_id (HTTP 404${error_message:+: $error_message})" >&2
         exit 65
         ;;
-      429)
+      429|5??)
         retry_attempt=$(( retry_attempt + 1 ))
         retry_delay="$(retry_after_seconds "$header_file")"
         [[ -n "$retry_delay" ]] || retry_delay="$(bounded_backoff "$retry_attempt")"
-        echo "> polling rate limited; retrying after ${retry_delay}s with after=$after" >&2
+        echo "> run API returned HTTP $run_code; retrying after ${retry_delay}s" >&2
         poll_sleep "$retry_delay" "$started"
-        ;;
-      5??)
-        retry_attempt=$(( retry_attempt + 1 ))
-        retry_delay="$(bounded_backoff "$retry_attempt")"
-        echo "> polling API returned HTTP $event_code; retrying after ${retry_delay}s with after=$after" >&2
-        poll_sleep "$retry_delay" "$started"
+        continue
         ;;
       *)
-        error_message="$(json_error_message "$poll_dir/body")"
-        echo "protocol error: polling API returned HTTP $event_code${error_message:+: $error_message}" >&2
+        error_message="$(json_error_message "$poll_dir/run-body")"
+        echo "protocol error: run API returned HTTP $run_code${error_message:+: $error_message}" >&2
         exit 65
         ;;
     esac
+
+    if [[ "$claim_attempts" -ne "$remembered_claim_attempts" || "$latest_cursor" -lt "$after" ]]; then
+      if [[ "$after" -gt 0 ]]; then
+        echo "> worker attempt changed; clearing abandoned live output and restarting at cursor 0" >&2
+      fi
+      reset_live_state "$state_file" "$log_file"
+      after=0
+    fi
+    remembered_claim_attempts="$claim_attempts"
+    event_shape="none"
+    event_logs_truncated=0
+    legacy_has_more=0
+    event_after_before="$after"
+
+    if [[ "$live_events_unavailable" -eq 0 ]]; then
+      : > "$header_file"
+      : > "$poll_dir/events-body"
+      if ! event_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/events-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id/events?after=$after&limit_bytes=262144")"; then
+        retry_attempt=$(( retry_attempt + 1 ))
+        retry_delay="$(bounded_backoff "$retry_attempt")"
+        echo "> event request failed; retrying after ${retry_delay}s with after=$after" >&2
+        poll_sleep "$retry_delay" "$started"
+        continue
+      fi
+      case "$event_code" in
+        200)
+          apply_meta="$(apply_events_response "$poll_dir/events-body" "$run_id" "$after" "$state_file" "$log_file")" || exit $?
+          IFS=$'\t' read -r next_after event_shape event_logs_truncated legacy_status legacy_terminal legacy_has_more <<<"$apply_meta"
+          after="$next_after"
+          if [[ "$event_shape" == "legacy" && "$legacy_terminal" -eq 1 ]]; then
+            status="$legacy_status"
+            terminal=1
+          fi
+          retry_attempt=0
+          ;;
+        400)
+          error_message="$(json_error_message "$poll_dir/events-body")"
+          echo "protocol error: event request rejected (HTTP 400${error_message:+: $error_message})" >&2
+          exit 65
+          ;;
+        401)
+          error_message="$(json_error_message "$poll_dir/events-body")"
+          echo "authentication error: event API key rejected (HTTP 401${error_message:+: $error_message})" >&2
+          exit 77
+          ;;
+        403)
+          error_message="$(json_error_message "$poll_dir/events-body")"
+          echo "authorization error: cannot access events for run $run_id (HTTP 403${error_message:+: $error_message})" >&2
+          exit 77
+          ;;
+        404)
+          live_events_unavailable=1
+          echo "> live output is unavailable on this host; continuing with run-status polling" >&2
+          ;;
+        429|5??)
+          retry_attempt=$(( retry_attempt + 1 ))
+          retry_delay="$(retry_after_seconds "$header_file")"
+          [[ -n "$retry_delay" ]] || retry_delay="$(bounded_backoff "$retry_attempt")"
+          echo "> event API returned HTTP $event_code; retrying after ${retry_delay}s with after=$after" >&2
+          poll_sleep "$retry_delay" "$started"
+          continue
+          ;;
+        *)
+          error_message="$(json_error_message "$poll_dir/events-body")"
+          echo "protocol error: event API returned HTTP $event_code${error_message:+: $error_message}" >&2
+          exit 65
+          ;;
+      esac
+    fi
+
+    elapsed=$(( SECONDS - started ))
+    printf '  ...%s (%ds)\r' "$status" "$elapsed"
+    if [[ "$warned_logs_truncated" -eq 0 && ( "$event_logs_truncated" -eq 1 || "$run_logs_truncated" -eq 1 ) ]]; then
+      echo "warning: live logs were truncated" >&2
+      warned_logs_truncated=1
+    fi
+    if [[ "$legacy_has_more" -eq 1 ]]; then
+      continue
+    fi
+    if [[ "$terminal" -eq 1 && ( "$live_events_unavailable" -eq 1 || "$after" -ge "$latest_cursor" || ( "$after" -eq "$event_after_before" && ( "$event_logs_truncated" -eq 1 || "$run_logs_truncated" -eq 1 || "$logs_complete" -eq 0 ) ) ) ]]; then
+      local out_dir output_file patch_check_failed patch_check_file patch_file record_file result_meta
+      echo
+      [[ "$logs_complete" -ne 0 ]] || echo "warning: the run finished but live logs are incomplete" >&2
+      out_dir="$(git rev-parse --git-path offload)"
+      mkdir -p "$out_dir"
+      out_dir="$(cd "$out_dir" && pwd)"
+      patch_file="$out_dir/$run_id.patch"
+      output_file="$out_dir/$run_id.output.txt"
+      record_file="$out_dir/$run_id.result.json"
+      patch_check_file="$out_dir/$run_id.patch-check.txt"
+      cp "$poll_dir/run-body" "$record_file"
+      result_meta="$(save_run_result "$poll_dir/run-body" "$poll_dir/events-body" "$patch_file" "$output_file")" || exit $?
+      IFS=$'\t' read -r has_patch has_output <<<"$result_meta"
+      patch_check_failed=0
+      if [[ "$status" == "ok_patch" && "$has_patch" -eq 1 && -s "$patch_file" ]]; then
+        if git -C "$toplevel" apply --check "$patch_file" >"$patch_check_file" 2>&1; then
+          rm -f "$patch_check_file"
+          echo "  patch:  $patch_file"
+          echo "  apply:  git apply $patch_file"
+        else
+          patch_check_failed=1
+          echo "  patch:  $patch_file"
+          echo "  check:  failed (details: $patch_check_file)"
+        fi
+      elif [[ "$status" == "ok_patch" ]]; then
+        rm -f "$patch_check_file"
+        echo "  patch:  no changes"
+      elif [[ "$has_patch" -eq 1 ]]; then
+        echo "  partial patch: $patch_file"
+      fi
+      [[ "$has_output" -eq 0 ]] || echo "  output: $output_file"
+      echo "  result: $record_file"
+      echo "  Claude Code output on the worker: $log_file"
+      if [[ "$has_output" -eq 1 ]]; then
+        echo
+        echo "Agent output:"
+        print_safe_text_file "$output_file"
+      fi
+      if [[ "$patch_check_failed" -ne 0 ]]; then
+        echo "x returned patch failed git apply --check; it may be corrupted in transport or not match this checkout" >&2
+        exit 65
+      fi
+      if [[ "$status" == "ok_patch" || "$status" == "ok" || "$status" == "ok_no_pr" ]]; then
+        echo "OK $status done."
+        exit 0
+      fi
+      if [[ "$status" == "env_failed" ]]; then
+        echo "x run $status - project environment injection failed; manage values in the browser: $(env_settings_url "$folder_id")" >&2
+      else
+        error_message="$(json_error_message "$poll_dir/run-body")"
+        echo "x run $status${error_message:+: $error_message}" >&2
+      fi
+      exit 1
+    fi
+    poll_sleep "$POLL_INTERVAL" "$started"
   done
   echo
   echo "still running after ${POLL_TIMEOUT}s; check later with run_id=$run_id" >&2

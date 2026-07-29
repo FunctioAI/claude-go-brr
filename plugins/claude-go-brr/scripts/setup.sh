@@ -73,18 +73,7 @@ request_install_url() {
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     reload_saved_config
     require_matching_saved_login
-    local visibility
-    visibility="$("$CLIENT" github visibility --remote "${OFFLOAD_REMOTE:-origin}" 2>/dev/null)" || visibility="unknown"
-    if [[ "$visibility" == "public" ]]; then
-      echo "Repository is public. GitHub App installation is not required."
-      return
-    fi
-    if [[ "$visibility" == "private" ]]; then
-      echo "Repository is private or not publicly accessible. GitHub App installation is required."
-    else
-      echo "Could not determine repository visibility. Continuing with GitHub App installation."
-    fi
-    echo "Requesting GitHub App install URL for this repo..."
+    echo "Checking repository access with the offload host..."
     "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}" || {
       echo
       echo "Auth is saved, but repo approval URL could not be created automatically."

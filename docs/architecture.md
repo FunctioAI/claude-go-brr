@@ -8,10 +8,10 @@ Run `/claude-go-brr:setup` from the repository you want to use:
 
 1. The command starts a GitHub device login and prints a login URL.
 2. Open the URL and authorize `claude-go-brr` with GitHub.
-3. Run `/claude-go-brr:setup` again. The client exchanges the saved device code for an API key in `~/.config/offload/config` and checks the repository visibility.
+3. Run `/claude-go-brr:setup` again. The client exchanges the saved device code for an API key in `~/.config/offload/config` and asks the host to determine repository access.
 4. Public repositories are ready immediately. For private repositories, open the printed installation URL and grant the GitHub App access to the repository.
 
-If you are already signed in, `/claude-go-brr:setup` skips the login flow and checks the current repository. It prints an installation URL only when the repository is not publicly accessible or its visibility cannot be determined.
+If you are already signed in, `/claude-go-brr:setup` skips the login flow and asks the host to check the current repository. It prints an installation URL only when the host requires GitHub App authorization.
 
 Project environment variables are managed through the cloud settings page. Run `/claude-go-brr:env` from the project to print its settings URL and configured key names, then add or update values in the browser. Secret values are never accepted or printed by the local command and are injected into subsequent cloud runs.
 
@@ -30,7 +30,7 @@ The standard command passes the prompt unchanged to an optimized bare-metal work
 prompt 2"
 ```
 
-The `:ind` command uses the same path but treats each prompt line as an independent cloud agent task.
+The `:ind` command uses the same path but treats each nonblank prompt line as one prompt in a multi-prompt run. Multi-prompt and single-prompt runs use the shared worker queue.
 
 The local client resolves the current GitHub repository, checked-out branch, and project subdirectory, then submits them to the offload API. Local uncommitted changes are excluded because cloud runs use the branch stored on GitHub.
 
@@ -46,6 +46,6 @@ Public repositories are cloned without authentication. Private repository access
 
 ## Result Delivery
 
-The background client polls the run event stream, which can be monitored through `/tasks`. On completion it writes the agent output and returned patch to `.git/offload/`.
+The background client separately polls the run record and append-only live events, which can be monitored through `/tasks`. On completion it writes the complete run record, agent output, and returned patch to `.git/offload/`.
 
 Non-empty patches are checked with `git apply --check` before the client prints the exact apply command. Applying the patch remains an explicit local action.
