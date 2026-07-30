@@ -17,20 +17,16 @@ Project environment variables are managed through the cloud settings page. Run `
 
 ## Claude Code Integration
 
-The plugin exposes 2 ways to submit agent tasks:
+The plugin exposes one way to submit agent tasks:
 
 ```text
 /claude-go-brr:claude-go-brr "prompt"
 ```
 
-The standard command passes the prompt unchanged to an optimized bare-metal worker running as a managed background task.
-
-```text
-/claude-go-brr:ind "prompt 1
-prompt 2"
-```
-
-The `:ind` command uses the same path but treats each nonblank prompt line as one prompt in a multi-prompt run. Multi-prompt and single-prompt runs use the shared worker queue.
+The command treats each input line as one prompt in a multi-prompt run and
+rejects blank lines.
+A single line is submitted as a one-item `prompts` array. All prompts use the
+host's shared worker queue.
 
 The local client resolves the current GitHub repository, checked-out branch, and project subdirectory, then submits them to the offload API. Local uncommitted changes are excluded because cloud runs use the branch stored on GitHub.
 

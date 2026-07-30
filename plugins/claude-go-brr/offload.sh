@@ -16,7 +16,6 @@
 # Submit and inspect runs:
 #   offload.sh "implement the thing"
 #   offload.sh submit -d /path/to/folder "fix the bug in checkout"
-#   offload.sh submit --individual-instances "run each item independently"
 #   offload.sh --no-wait "long task"
 #   offload.sh runs
 #   offload.sh status RUN_ID
@@ -821,18 +820,16 @@ env_cmd() {
 }
 
 submit_cmd() {
-  local folder wait multi_prompt prompt branch dirty_files git_ref body resp run_id elapsed status log_file log_prefix
+  local folder wait prompt branch dirty_files git_ref body resp run_id elapsed status log_file log_prefix
   local after apply_meta claim_attempts error_message event_after_before event_code event_logs_truncated event_shape has_patch has_output header_file
   local latest_cursor legacy_has_more legacy_status legacy_terminal live_events_unavailable logs_complete next_after
   local poll_dir remaining remembered_claim_attempts retry_attempt retry_delay run_code run_logs_truncated run_meta started state_file terminal warned_logs_truncated
   folder="$PWD"
   wait=1
-  multi_prompt=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -d|--dir) folder="$2"; shift 2 ;;
       --no-wait) wait=0; shift ;;
-      --individual-instances) multi_prompt=1; shift ;;
       -h|--help) usage 0 ;;
       --) shift; break ;;
       -*) echo "unknown flag: $1" >&2; usage 64 ;;
@@ -866,12 +863,12 @@ submit_cmd() {
   git_ref="$branch"
   echo "> using GitHub ref $remote/$git_ref"
 
-  body="$(python3 - "$folder_id" "$repo_owner" "$repo_name" "$rel" "$git_ref" "$prompt" "$multi_prompt" <<'PY'
+  body="$(python3 - "$folder_id" "$repo_owner" "$repo_name" "$rel" "$git_ref" "$prompt" <<'PY'
 import json
 import re
 import sys
 
-folder_id, owner, repo, folder_path, git_ref, prompt, multi_prompt = sys.argv[1:]
+folder_id, owner, repo, folder_path, git_ref, prompt = sys.argv[1:]
 identifier = re.compile(r"[A-Za-z0-9_.-]+")
 if not 1 <= len(folder_id) <= 200 or not identifier.fullmatch(folder_id):
     raise SystemExit("error: folder_id is not valid for the offload protocol")
@@ -890,19 +887,12 @@ body = {
     "folder_path": folder_path,
     "git_ref": git_ref,
 }
-if multi_prompt == "1":
-    prompts = prompt.splitlines()
-    if not prompts or len(prompts) > 128 or any(not item.strip() for item in prompts):
-        raise SystemExit("error: multi-prompt input must contain 1-128 nonblank lines")
-    if any(len(item.encode()) > 256 * 1024 for item in prompts):
-        raise SystemExit("error: a prompt exceeds the 256 KiB host limit")
-    body["prompts"] = prompts
-else:
-    if not prompt.strip():
-        raise SystemExit("error: prompt must not be blank")
-    if len(prompt.encode()) > 256 * 1024:
-        raise SystemExit("error: prompt exceeds the 256 KiB host limit")
-    body["prompt"] = prompt
+prompts = prompt.splitlines()
+if not prompts or len(prompts) > 128 or any(not item.strip() for item in prompts):
+    raise SystemExit("error: prompt input must contain 1-128 nonblank lines")
+if any(len(item.encode()) > 256 * 1024 for item in prompts):
+    raise SystemExit("error: a prompt exceeds the 256 KiB host limit")
+body["prompts"] = prompts
 encoded = json.dumps(body)
 if len(encoded.encode()) > 8 * 1024 * 1024:
     raise SystemExit("error: submission exceeds the 8 MiB host limit")

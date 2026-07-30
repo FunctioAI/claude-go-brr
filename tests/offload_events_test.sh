@@ -142,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length))
-        scenario = body.get("prompt", "unknown")
+        scenario = body.get("prompts", ["unknown"])[0]
         with lock:
             with open(requests_path, "a") as stream:
                 stream.write(json.dumps({"kind": "submit", "body": body}) + "\n")
@@ -468,7 +468,7 @@ assert request["body"] == {"owner": "acme", "repo": "widgets"}
 assert request["authorization"] == "Bearer test"
 PY
 
-OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin "$CLIENT" submit --no-wait --individual-instances -- $'first\nsecond' >/dev/null
+OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin "$CLIENT" submit --no-wait -- $'first\nsecond' >/dev/null
 python3 - "$REQUESTS" <<'PY'
 import json
 from pathlib import Path
@@ -477,13 +477,14 @@ import sys
 submissions = [json.loads(line)["body"] for line in Path(sys.argv[1]).read_text().splitlines() if json.loads(line).get("kind") == "submit"]
 body = submissions[-1]
 assert body["prompts"] == ["first", "second"]
-assert "prompt" not in body and "individual_instances" not in body
+assert all("prompt" not in submission for submission in submissions)
+assert any(submission["prompts"] == ["happy"] for submission in submissions)
 PY
 
 set +e
 (cd "$ROOT" && OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin "$CLIENT" submit "   ") >"$TMP/blank.out" 2>&1
 blank_status=$?
 set -e
-[[ "$blank_status" -ne 0 && "$(<"$TMP/blank.out")" == *'prompt must not be blank'* ]] || fail "blank prompt was accepted"
+[[ "$blank_status" -ne 0 && "$(<"$TMP/blank.out")" == *'prompt input must contain 1-128 nonblank lines'* ]] || fail "blank prompt was accepted"
 
 echo "PASS: current two-poll protocol, legacy fallback, retry resets, output safety, and cancellation"

@@ -43,10 +43,10 @@ You can offload multi-agent ultracode workflows, and deep-research tasks by incl
 /claude-go-brr:claude-go-brr ultracode implement the authentication flow
 ```
 
-Use `/claude-go-brr:ind` to submit each nonblank line as a prompt in one multi-prompt run. These prompts use the host's shared worker queue:
+Each input line is submitted as a prompt in one run; blank lines are rejected. These prompts use the host's shared worker queue:
 
 ```text
-/claude-go-brr:ind Review the API implementation
+/claude-go-brr:claude-go-brr Review the API implementation
 Review the database migrations
 Review the test coverage
 ```

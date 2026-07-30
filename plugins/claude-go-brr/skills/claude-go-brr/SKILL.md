@@ -1,6 +1,6 @@
 ---
 name: claude-go-brr
-description: Submit the current Claude Code project directory as a cloud agent task through the offload host API.
+description: Submit each input line as a cloud agent prompt through the offload host API.
 argument-hint: <task prompt>
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh *)
@@ -37,7 +37,15 @@ for it to finish. Tell the user that `/tasks` can be used to inspect the local
 submit process output: polling progress, any live log events emitted by the host,
 and the final agent output when the run completes.
 
-The script delegates to `offload.sh submit`, submits to `/v1/runs`, polls the run record and live events until completion, saves top-level `patch` under `.git/offload/<run_id>.patch`, `agent_output` under `.git/offload/<run_id>.output.txt`, and the complete run record under `.git/offload/<run_id>.result.json`. Non-empty successful patch results are validated with `git apply --check`; failures retain details under `.git/offload/<run_id>.patch-check.txt` and exit 65. Polled worker events remain in the separate temporary worker log.
+The script delegates to `offload.sh submit`, splits `$ARGUMENTS` into one prompt
+per input line, and submits `prompts: ["...", "..."]` to `/v1/runs`. It polls
+the run record and live events until completion, saves top-level `patch` under
+`.git/offload/<run_id>.patch`, `agent_output` under
+`.git/offload/<run_id>.output.txt`, and the complete run record under
+`.git/offload/<run_id>.result.json`. Non-empty successful patch results are
+validated with `git apply --check`; failures retain details under
+`.git/offload/<run_id>.patch-check.txt` and exit 65. Polled worker events remain
+in the separate temporary worker log.
 
 After the background launch is confirmed, your task is complete. Report the
 background task identifier or output path returned by Bash, mention `/tasks`, and
