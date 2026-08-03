@@ -1,10 +1,10 @@
 # claude-go-brr
 
+<img src="media/header.png" alt="" width="100%">
 
-
-[Release](https://github.com/FunctioAI/claude-go-brr/releases)
-[License: MIT](plugins/claude-go-brr/LICENSE.md)
-Claude Code plugin
+[![Release](https://img.shields.io/github/v/release/FunctioAI/claude-go-brr?style=flat-square)](https://github.com/FunctioAI/claude-go-brr/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](plugins/claude-go-brr/LICENSE.md)
+![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757?style=flat-square)
 
 Offload Claude Code workflows, deep-research, and parallel agent tasks to the cloud, and get results 2-3x faster.
 
@@ -12,8 +12,12 @@ Offload Claude Code workflows, deep-research, and parallel agent tasks to the cl
 - **2–3× faster** deep-research 🔬
 - **2–3× faster** swarm of claude code instances 🐝
 
-  
-*We can speed up ultracode workflows 2–3×.*
+<p align="center">
+  <img src="media/speed-comparison.gif" alt="claude-go-brr speed comparison" width="100%">
+  <br>
+  <em>We can speed up ultracode workflows 2–3×.</em>
+</p>
+
 
 ## Install
 
@@ -45,13 +49,10 @@ Create an API key in the [Claude Console](https://console.anthropic.com/settings
 
 - [Getting Started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
-- [Demos](docs/usage_examples.md)
 
 ---
-
-Made by devs from  
-  
            
   
 Reach out to us! [@MakarKuznietsov](https://x.com/MakarKuznietsov)
 
+<img src="media/footer.png" alt="claude-go-brr" width="100%">
