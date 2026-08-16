@@ -41,6 +41,19 @@ Run `claude setup-token` locally and sign in with your Claude Pro or Max account
 
 Create an API key in the [Claude Console](https://console.anthropic.com/settings/keys), then run `/claude-go-brr:env`, open the printed settings URL, and add it as `ANTHROPIC_API_KEY` to use separately billed API credits. Set only one credential: Claude Code gives `ANTHROPIC_API_KEY` precedence when both are present. Values are stored securely, never printed by the command, and injected into subsequent workers for that project.
 
+For controlled benchmarks, the CLI can attest an exact allowlist of non-secret
+runtime settings without retrieving any stored values. For example:
+
+```bash
+plugins/claude-go-brr/offload.sh env -d /path/to/project \
+  --expect CLAUDE_BRR_MODEL=claude-sonnet-5 \
+  --expect CLAUDE_BRR_MAX_BUDGET_USD=0.30 \
+  --expect CLAUDE_BRR_TOOLS=Bash
+```
+
+The command returns only checked, missing, and mismatched key names. Credential,
+base-URL, and arbitrary environment keys are rejected locally and by the host.
+
 ---
 
 

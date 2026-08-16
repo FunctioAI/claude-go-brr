@@ -469,14 +469,15 @@ assert request["authorization"] == "Bearer test"
 PY
 
 OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin "$CLIENT" submit --no-wait -- $'first\nsecond' >/dev/null
+OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin "$CLIENT" submit --no-wait --individual-instances -- $'compat-first\ncompat-second' >/dev/null
 python3 - "$REQUESTS" <<'PY'
 import json
 from pathlib import Path
 import sys
 
 submissions = [json.loads(line)["body"] for line in Path(sys.argv[1]).read_text().splitlines() if json.loads(line).get("kind") == "submit"]
-body = submissions[-1]
-assert body["prompts"] == ["first", "second"]
+assert submissions[-2]["prompts"] == ["first", "second"]
+assert submissions[-1]["prompts"] == ["compat-first", "compat-second"]
 assert all("prompt" not in submission for submission in submissions)
 assert any(submission["prompts"] == ["happy"] for submission in submissions)
 PY

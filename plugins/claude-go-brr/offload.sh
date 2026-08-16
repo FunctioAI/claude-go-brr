@@ -10,6 +10,7 @@
 # Project environment variables:
 #   offload.sh env
 #   offload.sh env -d /path/to/folder
+#   offload.sh env -d /path/to/folder --expect CLAUDE_BRR_MODEL=claude-sonnet-5
 #   Set values once per project in the printed browser URL. The CLI shows key names only.
 #   Values are injected automatically on every run; browser changes apply to the next run.
 #
@@ -785,13 +786,119 @@ else:
 ' "$folder_id"
 }
 
+build_env_verify_payload() {
+  python3 - "$@" <<'PY'
+import json
+import re
+import sys
+
+allowed = {
+    "CLAUDE_BRR_EFFORT",
+    "CLAUDE_BRR_MAX_BUDGET_USD",
+    "CLAUDE_BRR_MODEL",
+    "CLAUDE_BRR_TOOLS",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+}
+expected = {}
+for item in sys.argv[1:]:
+    if "=" not in item:
+        print("error: --expect requires KEY=VALUE", file=sys.stderr)
+        raise SystemExit(64)
+    key, value = item.split("=", 1)
+    if key not in allowed:
+        print(f"error: {key or '<empty>'} is not an attestable non-secret runtime key", file=sys.stderr)
+        raise SystemExit(64)
+    if key in expected:
+        print(f"error: duplicate --expect key: {key}", file=sys.stderr)
+        raise SystemExit(64)
+    if not value or any(character in value for character in "\n\r\0") or len(value.encode()) > 256:
+        print(f"error: expected value for {key} must be a non-empty single-line value up to 256 bytes", file=sys.stderr)
+        raise SystemExit(64)
+    if key == "CLAUDE_BRR_MODEL":
+        valid = re.fullmatch(r"[A-Za-z0-9._:/@-]{1,200}", value) is not None
+    elif key == "CLAUDE_BRR_EFFORT":
+        valid = value in {"low", "medium", "high", "xhigh", "max"}
+    elif key == "CLAUDE_BRR_MAX_BUDGET_USD":
+        valid = re.fullmatch(r"(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,6})?", value) is not None
+        valid = valid and 0.000001 <= float(value) <= 1000 if valid else False
+    elif key == "CLAUDE_BRR_TOOLS":
+        valid = value == "Bash"
+    else:
+        valid = value == "1"
+    if not valid:
+        print(f"error: expected value for {key} is outside the attestable benchmark grammar", file=sys.stderr)
+        raise SystemExit(64)
+    expected[key] = value
+if not expected:
+    print("error: at least one --expect KEY=VALUE is required", file=sys.stderr)
+    raise SystemExit(64)
+print(json.dumps({"expected": expected}, separators=(",", ":")))
+PY
+}
+
+print_env_verification() {
+  local folder_id="$1"
+  shift
+
+  python3 -c '
+import json
+import sys
+
+folder_id = sys.argv[1]
+expectations = sys.argv[2:]
+expected_keys = []
+for item in expectations:
+    key = item.split("=", 1)[0]
+    if key in expected_keys:
+        print("protocol error: duplicate expected key", file=sys.stderr)
+        raise SystemExit(65)
+    expected_keys.append(key)
+expected_keys.sort()
+try:
+    doc = json.load(sys.stdin)
+except (ValueError, json.JSONDecodeError):
+    print("protocol error: env verification response is not valid JSON", file=sys.stderr)
+    raise SystemExit(65)
+if not isinstance(doc, dict) or set(doc) != {"folder_id", "matches", "checked_keys", "missing_keys", "mismatched_keys"}:
+    print("protocol error: env verification response shape is invalid", file=sys.stderr)
+    raise SystemExit(65)
+if doc.get("folder_id") != folder_id or not isinstance(doc.get("matches"), bool):
+    print("protocol error: env verification identity or match flag is invalid", file=sys.stderr)
+    raise SystemExit(65)
+matches = doc["matches"]
+checked = doc.get("checked_keys") or []
+missing = doc.get("missing_keys") or []
+mismatched = doc.get("mismatched_keys") or []
+for name, values in (("checked_keys", checked), ("missing_keys", missing), ("mismatched_keys", mismatched)):
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values) or values != sorted(set(values)):
+        print(f"protocol error: env verification {name} must be a string list", file=sys.stderr)
+        raise SystemExit(65)
+if checked != expected_keys or set(missing) & set(mismatched) or not set(missing + mismatched) <= set(checked):
+    print("protocol error: env verification key classification is invalid", file=sys.stderr)
+    raise SystemExit(65)
+if matches != (not missing and not mismatched):
+    print("protocol error: env verification match result is inconsistent", file=sys.stderr)
+    raise SystemExit(65)
+print(f"folder_id={doc.get('"'"'folder_id'"'"') or folder_id}")
+print(f"runtime_env_match={'"'"'true'"'"' if matches else '"'"'false'"'"'}")
+print(f"checked_keys={'"'"','"'"'.join(checked)}")
+if missing:
+    print(f"missing_keys={'"'"','"'"'.join(missing)}")
+if mismatched:
+    print(f"mismatched_keys={'"'"','"'"'.join(mismatched)}")
+raise SystemExit(0 if matches else 1)
+' "$folder_id" "$@"
+}
+
 env_cmd() {
-  local folder resp http_code body settings_url
+  local folder resp http_code body settings_url payload verified
+  local -a expectations=()
   folder="$PWD"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -d|--dir) folder="$2"; shift 2 ;;
-      -h|--help) echo "usage: $0 env [-d DIR]"; exit 0 ;;
+      -d|--dir) [[ $# -ge 2 ]] || { echo "error: $1 requires a directory" >&2; exit 64; }; folder="$2"; shift 2 ;;
+      --expect) [[ $# -ge 2 ]] || { echo "error: --expect requires KEY=VALUE" >&2; exit 64; }; expectations+=("$2"); shift 2 ;;
+      -h|--help) echo "usage: $0 env [-d DIR] [--expect KEY=VALUE ...]"; exit 0 ;;
       *) echo "unknown flag: $1" >&2; exit 64 ;;
     esac
   done
@@ -799,6 +906,30 @@ env_cmd() {
   require_api_key
   resolve_project_context "$folder"
   settings_url="$(env_settings_url "$PROJECT_FOLDER_ID")"
+
+  if [[ "${#expectations[@]}" -gt 0 ]]; then
+    payload="$(build_env_verify_payload "${expectations[@]}")"
+    if ! resp="$(curl -sS -X POST -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" -H "Content-Type: application/json" -d "$payload" -w $'\n%{http_code}' "$(api_url)/v1/folders/$PROJECT_FOLDER_ID/env/verify")"; then
+      echo "error: failed to verify project env values" >&2
+      exit 1
+    fi
+    http_code="${resp##*$'\n'}"
+    body="${resp%$'\n'*}"
+    if [[ "$http_code" != 2* || -z "$body" ]]; then
+      echo "error: env value verification failed with HTTP $http_code" >&2
+      exit 1
+    fi
+    verified=0
+    if printf '%s' "$body" | print_env_verification "$PROJECT_FOLDER_ID" "${expectations[@]}"; then
+      verified=0
+    else
+      verified=$?
+    fi
+    echo "settings_url=$settings_url"
+    echo "Stored values remain write-only; verification returns only key-level match metadata."
+    [[ "$verified" -eq 0 ]] || exit "$verified"
+    return 0
+  fi
 
   if ! resp="$(curl -sS -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" -w $'\n%{http_code}' "$(api_url)/v1/folders/$PROJECT_FOLDER_ID/env")"; then
     echo "error: failed to fetch env metadata" >&2
@@ -816,7 +947,7 @@ env_cmd() {
   fi
 
   echo "settings_url=$settings_url"
-  echo "Env variable values are managed in the browser only; this command shows key names and never accepts or prints values."
+  echo "Stored env values are managed in the browser and never returned; --expect accepts only allowlisted non-secret comparison values."
 }
 
 submit_cmd() {
@@ -830,6 +961,9 @@ submit_cmd() {
     case "$1" in
       -d|--dir) folder="$2"; shift 2 ;;
       --no-wait) wait=0; shift ;;
+      # Multiline prompts are always split now; retain the old low-level flag
+      # as a no-op for pinned automation while keeping the removed :ind UX gone.
+      --individual-instances) shift ;;
       -h|--help) usage 0 ;;
       --) shift; break ;;
       -*) echo "unknown flag: $1" >&2; usage 64 ;;
