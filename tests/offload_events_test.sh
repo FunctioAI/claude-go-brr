@@ -86,6 +86,13 @@ def record_for(run_id, record):
         return run_record(run_id, "ok", poll > 0, 1 if poll > 0 else 0, agent_output=f"{scenario} result")
     if scenario == "terminal_drained":
         return run_record(run_id, "ok" if poll > 0 else "running", poll > 0, 1, agent_output="Drained result" if poll > 0 else None)
+    if scenario == "cursor_skip":
+        status_poll = record["status_polls"]
+        if status_poll < 2:
+            return run_record(run_id, "running", False, 0)
+        if status_poll == 2:
+            return run_record(run_id, "running", False, 1)
+        return run_record(run_id, "ok", True, 1, agent_output="Cursor skip complete")
     if scenario == "unknown_terminal":
         return run_record(run_id, "custom_terminal_error", True, patch="partial patch", agent_output="Partial output")
     if scenario == "incomplete_logs":
@@ -156,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             serial += 1
             run_id = f"test-{scenario}-{serial}"
-            runs[run_id] = {"scenario": scenario, "polls": 0}
+            runs[run_id] = {"scenario": scenario, "polls": 0, "status_polls": 0}
         self.send_json({"run_id": run_id, "status": "queued"}, 202)
 
     def do_GET(self):
@@ -172,6 +179,7 @@ class Handler(BaseHTTPRequestHandler):
                 with open(requests_path, "a") as stream:
                     stream.write(json.dumps({"kind": "run", "scenario": record["scenario"], "event_polls": record["polls"], "time": time.monotonic()}) + "\n")
                 data = record_for(run_id, record)
+                record["status_polls"] += 1
             self.send_json(data)
             return
         if len(parts) != 4 or parts[:2] != ["v1", "runs"] or parts[3] != "events" or parts[2] not in runs:
@@ -227,6 +235,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if scenario == "terminal_drained":
             self.send_json(events_response([{"seq": 1, "prompt_index": 0, "text": "fully drained\n"}], 1))
+            return
+        if scenario == "cursor_skip":
+            if poll == 1:
+                self.send_json(events_response([], after))
+            else:
+                self.send_json(events_response([{"seq": 1, "prompt_index": 0, "text": "cursor advanced\n"}], 1))
             return
         if scenario.startswith("http_"):
             status = int(scenario.split("_", 1)[1])
@@ -307,6 +321,10 @@ happy_log="$(sed -n 's/^  Claude Code output on the worker: //p' "$RUN_OUTPUT" |
 run_client terminal_drained 0
 terminal_drained_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
 [[ "$(<"$ROOT/.git/offload/$terminal_drained_run_id.output.txt")" == "Drained result" ]] || fail "terminal result was not saved after skipping its redundant event request"
+
+run_client cursor_skip 0
+cursor_skip_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
+[[ "$(<"$ROOT/.git/offload/$cursor_skip_run_id.output.txt")" == "Cursor skip complete" ]] || fail "cursor-skip result was not saved"
 
 run_client invalid_patch 65
 invalid_patch_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
@@ -412,6 +430,10 @@ assert happy[3]["time"] - happy[2]["time"] >= 0.8, "terminal drain polling inter
 assert happy[1]["time"] - happy[0]["time"] < 3.0, "default healthy poll interval did not change from five seconds to one"
 terminal_drained = scenario("terminal_drained")
 assert len(terminal_drained) == 1, "fully drained terminal status made a redundant event request"
+cursor_skip = scenario("cursor_skip")
+assert [record["after"] for record in cursor_skip] == [0, 0], "caught-up current-protocol event request was not skipped or cursor advance was not drained"
+cursor_skip_runs = [record for record in run_records if record.get("scenario") == "cursor_skip"]
+assert len(cursor_skip_runs) == 4, "cursor-skip status sequence did not reach the terminal record"
 for name in ("network_retry", "server_retry", "rate_limit"):
     attempts = scenario(name)
     assert [record["after"] for record in attempts] == [0, 0], f"{name} advanced its cursor while retrying"

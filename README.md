@@ -64,6 +64,10 @@ seconds), `OFFLOAD_RETRY_BACKOFF_BASE` (0.1–30 seconds), and
 `OFFLOAD_POLL_TIMEOUT` (an integer up to 31,536,000 seconds). Invalid or
 out-of-range values are rejected before a run is submitted.
 
+On current hosts, the client probes the event protocol once and then skips
+caught-up event requests until the authoritative status cursor advances.
+Legacy hosts without that cursor retain status-plus-event polling.
+
 ---
 
 

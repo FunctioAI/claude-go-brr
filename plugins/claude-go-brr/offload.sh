@@ -277,6 +277,7 @@ status = doc.get("status")
 finished_at = doc.get("finished_at")
 claim_attempts = doc.get("claim_attempts", 0)
 latest_cursor = doc.get("latest_log_cursor", 0)
+latest_cursor_present = "latest_log_cursor" in doc
 logs_truncated = doc.get("logs_truncated", False)
 if not isinstance(status, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", status):
     print("protocol error: run status must be an identifier", file=sys.stderr)
@@ -296,7 +297,7 @@ if not isinstance(logs_truncated, bool):
 live_logs = doc.get("live_logs")
 logs_complete = live_logs.get("logs_complete") if isinstance(live_logs, dict) else None
 logs_complete_value = int(logs_complete) if isinstance(logs_complete, bool) else -1
-print(f"{status}\t{int(finished_at is not None)}\t{claim_attempts}\t{latest_cursor}\t{int(logs_truncated)}\t{logs_complete_value}")
+print(f"{status}\t{int(finished_at is not None)}\t{claim_attempts}\t{latest_cursor}\t{int(latest_cursor_present)}\t{int(logs_truncated)}\t{logs_complete_value}")
 PY
 }
 
@@ -984,8 +985,8 @@ env_cmd() {
 submit_cmd() {
   local folder wait prompt branch dirty_files git_ref body resp run_id elapsed status log_file log_prefix
   local after apply_meta claim_attempts error_message event_after_before event_code event_logs_truncated event_shape has_patch has_output header_file
-  local latest_cursor legacy_has_more legacy_status legacy_terminal live_events_unavailable logs_complete next_after
-  local poll_dir remaining remembered_claim_attempts retry_attempt retry_delay run_code run_logs_truncated run_meta started state_file terminal warned_logs_truncated
+  local latest_cursor latest_cursor_present legacy_has_more legacy_status legacy_terminal live_events_unavailable logs_complete next_after
+  local current_events_confirmed poll_dir remaining remembered_claim_attempts retry_attempt retry_delay run_code run_logs_truncated run_meta started state_file terminal warned_logs_truncated
   folder="$PWD"
   wait=1
   while [[ $# -gt 0 ]]; do
@@ -1103,6 +1104,7 @@ PY
   after=0
   remembered_claim_attempts=0
   live_events_unavailable=0
+  current_events_confirmed=0
   warned_logs_truncated=0
   retry_attempt=0
   started=$SECONDS
@@ -1120,7 +1122,7 @@ PY
     case "$run_code" in
       200)
         run_meta="$(parse_run_record "$poll_dir/run-body" "$run_id")" || exit $?
-        IFS=$'\t' read -r status terminal claim_attempts latest_cursor run_logs_truncated logs_complete <<<"$run_meta"
+        IFS=$'\t' read -r status terminal claim_attempts latest_cursor latest_cursor_present run_logs_truncated logs_complete <<<"$run_meta"
         ;;
       401)
         error_message="$(json_error_message "$poll_dir/run-body")"
@@ -1166,7 +1168,7 @@ PY
     event_after_before="$after"
     : > "$poll_dir/events-body"
 
-    if [[ "$live_events_unavailable" -eq 0 && ! ( "$terminal" -eq 1 && "$after" -ge "$latest_cursor" ) ]]; then
+    if [[ "$live_events_unavailable" -eq 0 && ! ( "$latest_cursor_present" -eq 1 && "$current_events_confirmed" -eq 1 && "$after" -ge "$latest_cursor" ) ]]; then
       : > "$header_file"
       if ! event_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/events-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id/events?after=$after&limit_bytes=262144")"; then
         retry_attempt=$(( retry_attempt + 1 ))
@@ -1180,6 +1182,9 @@ PY
           apply_meta="$(apply_events_response "$poll_dir/events-body" "$run_id" "$after" "$state_file" "$log_file")" || exit $?
           IFS=$'\t' read -r next_after event_shape event_logs_truncated legacy_status legacy_terminal legacy_has_more <<<"$apply_meta"
           after="$next_after"
+          if [[ "$event_shape" == "current" ]]; then
+            current_events_confirmed=1
+          fi
           if [[ "$event_shape" == "legacy" && "$legacy_terminal" -eq 1 ]]; then
             status="$legacy_status"
             terminal=1
