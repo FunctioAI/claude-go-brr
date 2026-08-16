@@ -54,6 +54,16 @@ plugins/claude-go-brr/offload.sh env -d /path/to/project \
 The command returns only checked, missing, and mismatched key names. Credential,
 base-URL, and arbitrary environment keys are rejected locally and by the host.
 
+## Polling controls
+
+While waiting for a run, successful status checks repeat every second. Transient
+network failures, plus rate-limit and server failures without `Retry-After`, use
+a separate exponential retry delay based at five seconds and capped at 30
+seconds. Advanced users can override these with `OFFLOAD_POLL_INTERVAL` (0.1–60
+seconds), `OFFLOAD_RETRY_BACKOFF_BASE` (0.1–30 seconds), and
+`OFFLOAD_POLL_TIMEOUT` (an integer up to 31,536,000 seconds). Invalid or
+out-of-range values are rejected before a run is submitted.
+
 ---
 
 

@@ -26,6 +26,9 @@
 #   OFFLOAD_API_KEY   host-issued client API key
 #   OFFLOAD_GITHUB_LOGIN authenticated GitHub login, saved when returned by auth
 #   OFFLOAD_REMOTE    optional explicit git remote override
+#   OFFLOAD_POLL_INTERVAL successful run/event polling interval (default 1 second)
+#   OFFLOAD_RETRY_BACKOFF_BASE transient-error retry base (default 5 seconds)
+#   OFFLOAD_POLL_TIMEOUT maximum wait for a submitted run (default 3600 seconds)
 #
 set -Eeuo pipefail
 
@@ -36,6 +39,7 @@ ENV_OFFLOAD_API_KEY="${OFFLOAD_API_KEY-}"
 ENV_OFFLOAD_REMOTE="${OFFLOAD_REMOTE-}"
 ENV_OFFLOAD_GITHUB_LOGIN="${OFFLOAD_GITHUB_LOGIN-}"
 ENV_OFFLOAD_POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL-}"
+ENV_OFFLOAD_RETRY_BACKOFF_BASE="${OFFLOAD_RETRY_BACKOFF_BASE-}"
 ENV_OFFLOAD_POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT-}"
 # shellcheck disable=SC1090
 [[ -f "$CONFIG" ]] && source "$CONFIG"
@@ -44,9 +48,11 @@ ENV_OFFLOAD_POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT-}"
 [[ -n "$ENV_OFFLOAD_REMOTE" ]] && OFFLOAD_REMOTE="$ENV_OFFLOAD_REMOTE"
 [[ -n "$ENV_OFFLOAD_GITHUB_LOGIN" ]] && OFFLOAD_GITHUB_LOGIN="$ENV_OFFLOAD_GITHUB_LOGIN"
 [[ -n "$ENV_OFFLOAD_POLL_INTERVAL" ]] && OFFLOAD_POLL_INTERVAL="$ENV_OFFLOAD_POLL_INTERVAL"
+[[ -n "$ENV_OFFLOAD_RETRY_BACKOFF_BASE" ]] && OFFLOAD_RETRY_BACKOFF_BASE="$ENV_OFFLOAD_RETRY_BACKOFF_BASE"
 [[ -n "$ENV_OFFLOAD_POLL_TIMEOUT" ]] && OFFLOAD_POLL_TIMEOUT="$ENV_OFFLOAD_POLL_TIMEOUT"
 
-POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL:-5}"
+POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL:-1}"
+RETRY_BACKOFF_BASE="${OFFLOAD_RETRY_BACKOFF_BASE:-5}"
 POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT:-3600}"
 
 usage() {
@@ -352,11 +358,35 @@ PY
 bounded_backoff() {
   python3 -c 'import sys
 attempt = int(sys.argv[1])
-try:
-    base = max(1.0, float(sys.argv[2]))
-except ValueError:
-    base = 1.0
-print(min(30.0, base * (2 ** min(attempt - 1, 5))))' "$1" "$POLL_INTERVAL"
+base = float(sys.argv[2])
+print(min(30.0, base * (2 ** min(attempt - 1, 5))))' "$1" "$RETRY_BACKOFF_BASE"
+}
+
+validate_poll_configuration() {
+  python3 - "$POLL_INTERVAL" "$RETRY_BACKOFF_BASE" "$POLL_TIMEOUT" <<'PY'
+import math
+import re
+import sys
+
+poll_interval, retry_base, poll_timeout = sys.argv[1:]
+
+def fail(message):
+    print(f"error: {message}", file=sys.stderr)
+    raise SystemExit(78)
+
+def bounded_number(name, raw, minimum, maximum):
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        fail(f"{name} must be a finite number between {minimum:g} and {maximum:g} seconds")
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        fail(f"{name} must be a finite number between {minimum:g} and {maximum:g} seconds")
+
+bounded_number("OFFLOAD_POLL_INTERVAL", poll_interval, 0.1, 60.0)
+bounded_number("OFFLOAD_RETRY_BACKOFF_BASE", retry_base, 0.1, 30.0)
+if not re.fullmatch(r"[1-9][0-9]*", poll_timeout) or not 1 <= int(poll_timeout) <= 31_536_000:
+    fail("OFFLOAD_POLL_TIMEOUT must be an integer between 1 and 31536000 seconds")
+PY
 }
 
 poll_sleep() {
@@ -538,6 +568,7 @@ save_config() {
     [[ -n "${OFFLOAD_REMOTE:-}" ]] && printf 'OFFLOAD_REMOTE=%s\n' "$OFFLOAD_REMOTE"
     [[ -n "$github_login" ]] && printf 'OFFLOAD_GITHUB_LOGIN=%s\n' "$github_login"
     [[ -n "${OFFLOAD_POLL_INTERVAL:-}" ]] && printf 'OFFLOAD_POLL_INTERVAL=%s\n' "$OFFLOAD_POLL_INTERVAL"
+    [[ -n "${OFFLOAD_RETRY_BACKOFF_BASE:-}" ]] && printf 'OFFLOAD_RETRY_BACKOFF_BASE=%s\n' "$OFFLOAD_RETRY_BACKOFF_BASE"
     [[ -n "${OFFLOAD_POLL_TIMEOUT:-}" ]] && printf 'OFFLOAD_POLL_TIMEOUT=%s\n' "$OFFLOAD_POLL_TIMEOUT"
   } > "$CONFIG"
   chmod 600 "$CONFIG"
@@ -973,6 +1004,7 @@ submit_cmd() {
 
   prompt="${*:-}"
   [[ -n "$prompt" ]] || { echo "error: no task prompt given" >&2; usage 64; }
+  validate_poll_configuration
   require_api_key
 
   local toplevel rel repo_owner repo_name folder_id remote
@@ -1132,10 +1164,10 @@ PY
     event_logs_truncated=0
     legacy_has_more=0
     event_after_before="$after"
+    : > "$poll_dir/events-body"
 
-    if [[ "$live_events_unavailable" -eq 0 ]]; then
+    if [[ "$live_events_unavailable" -eq 0 && ! ( "$terminal" -eq 1 && "$after" -ge "$latest_cursor" ) ]]; then
       : > "$header_file"
-      : > "$poll_dir/events-body"
       if ! event_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/events-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id/events?after=$after&limit_bytes=262144")"; then
         retry_attempt=$(( retry_attempt + 1 ))
         retry_delay="$(bounded_backoff "$retry_attempt")"

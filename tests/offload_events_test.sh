@@ -84,12 +84,16 @@ def record_for(run_id, record):
         return run_record(run_id, "ok_patch", True, patch="not a patch\n", agent_output="Invalid patch output.")
     if scenario in {"network_retry", "server_retry", "rate_limit"}:
         return run_record(run_id, "ok", poll > 0, 1 if poll > 0 else 0, agent_output=f"{scenario} result")
+    if scenario == "terminal_drained":
+        return run_record(run_id, "ok" if poll > 0 else "running", poll > 0, 1, agent_output="Drained result" if poll > 0 else None)
     if scenario == "unknown_terminal":
         return run_record(run_id, "custom_terminal_error", True, patch="partial patch", agent_output="Partial output")
     if scenario == "incomplete_logs":
         return run_record(run_id, "ok", True, 5, agent_output="Completed with incomplete logs", logs_complete=False)
     if scenario == "http_404":
-        return run_record(run_id, "ok", True, agent_output="Status-only result")
+        return run_record(run_id, "ok" if poll > 0 else "running", poll > 0, agent_output="Status-only result" if poll > 0 else None)
+    if scenario == "timeout":
+        return run_record(run_id, "running", False)
     if scenario == "claim_reset":
         if poll == 0:
             return run_record(run_id, "running", False, 1, 1)
@@ -221,6 +225,9 @@ class Handler(BaseHTTPRequestHandler):
         if scenario in {"network_retry", "server_retry", "rate_limit"}:
             self.send_json(events_response([{"seq": 1, "prompt_index": 0, "text": f"{scenario} done\n"}], 1))
             return
+        if scenario == "terminal_drained":
+            self.send_json(events_response([{"seq": 1, "prompt_index": 0, "text": "fully drained\n"}], 1))
+            return
         if scenario.startswith("http_"):
             status = int(scenario.split("_", 1)[1])
             self.send_json({"error": f"test {status}"}, status)
@@ -235,6 +242,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(events_response([], after, True))
             return
         if scenario == "cancel":
+            self.send_json(events_response([], after))
+            return
+        if scenario == "timeout":
             self.send_json(events_response([], after))
             return
         if scenario == "claim_reset":
@@ -269,7 +279,7 @@ run_client() {
   local scenario="$1" expected_status="$2"
   RUN_OUTPUT="$TMP/$scenario.out"
   set +e
-  (cd "$ROOT" && TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL=1 OFFLOAD_POLL_TIMEOUT=8 "$CLIENT" submit "$scenario") >"$RUN_OUTPUT" 2>&1
+  (cd "$ROOT" && TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL= OFFLOAD_RETRY_BACKOFF_BASE=1 OFFLOAD_POLL_TIMEOUT=8 "$CLIENT" submit "$scenario") >"$RUN_OUTPUT" 2>&1
   RUN_STATUS=$?
   set -e
   [[ "$RUN_STATUS" -eq "$expected_status" ]] || fail "$scenario exited $RUN_STATUS, expected $expected_status: $(<"$RUN_OUTPUT")"
@@ -293,6 +303,10 @@ happy_log="$(sed -n 's/^  Claude Code output on the worker: //p' "$RUN_OUTPUT" |
 [[ "$happy_output" != *$'\e['* ]] || fail "terminal escape sequence reached process output"
 [[ "$happy_output" != *'Premature agent output.'* ]] || fail "terminal result was displayed before stored batches were drained"
 [[ -s "$ROOT/.git/offload/$happy_run_id.result.json" ]] || fail "full run record was not preserved"
+
+run_client terminal_drained 0
+terminal_drained_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
+[[ "$(<"$ROOT/.git/offload/$terminal_drained_run_id.output.txt")" == "Drained result" ]] || fail "terminal result was not saved after skipping its redundant event request"
 
 run_client invalid_patch 65
 invalid_patch_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
@@ -340,12 +354,20 @@ claim_log="$(sed -n 's/^  Claude Code output on the worker: //p' "$RUN_OUTPUT" |
 [[ "$(<"$claim_log")" != *'abandoned attempt'* ]] || fail "abandoned attempt output was mixed with replacement output"
 [[ "$(<"$RUN_OUTPUT")" == *'worker attempt changed'* ]] || fail "claim-attempt reset was not surfaced"
 
+timeout_output="$TMP/timeout.out"
+set +e
+(cd "$ROOT" && TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL= OFFLOAD_RETRY_BACKOFF_BASE=1 OFFLOAD_POLL_TIMEOUT=2 "$CLIENT" submit timeout) >"$timeout_output" 2>&1
+timeout_status=$?
+set -e
+[[ "$timeout_status" -eq 0 ]] || fail "timeout scenario exited $timeout_status instead of preserving the status-check workflow"
+[[ "$(<"$timeout_output")" == *'still running after 2s'* ]] || fail "timeout status guidance was not preserved"
+
 run_client legacy_host 0
 legacy_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
 [[ "$(<"$ROOT/.git/offload/$legacy_run_id.output.txt")" == "Legacy result" ]] || fail "legacy terminal result fallback was not preserved"
 
 cancel_output="$TMP/cancel.out"
-(cd "$ROOT" && exec env TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL=1 OFFLOAD_POLL_TIMEOUT=8 "$CLIENT" submit cancel) >"$cancel_output" 2>&1 &
+(cd "$ROOT" && exec env TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL= OFFLOAD_RETRY_BACKOFF_BASE=1 OFFLOAD_POLL_TIMEOUT=8 "$CLIENT" submit cancel) >"$cancel_output" 2>&1 &
 CLIENT_PID=$!
 for _ in {1..50}; do
   cancel_count="$(python3 -c 'import json, pathlib, sys; print(sum(json.loads(line).get("scenario") == "cancel" for line in pathlib.Path(sys.argv[1]).read_text().splitlines()))' "$REQUESTS")"
@@ -387,15 +409,52 @@ assert [record["after"] for record in happy] == [0, 0, 1, 2]
 assert happy[1]["time"] - happy[0]["time"] >= 0.8, "caught-up queued response did not wait"
 assert happy[2]["time"] - happy[1]["time"] >= 0.8, "current event polling interval was skipped"
 assert happy[3]["time"] - happy[2]["time"] >= 0.8, "terminal drain polling interval was skipped"
+assert happy[1]["time"] - happy[0]["time"] < 3.0, "default healthy poll interval did not change from five seconds to one"
+terminal_drained = scenario("terminal_drained")
+assert len(terminal_drained) == 1, "fully drained terminal status made a redundant event request"
 for name in ("network_retry", "server_retry", "rate_limit"):
     attempts = scenario(name)
     assert [record["after"] for record in attempts] == [0, 0], f"{name} advanced its cursor while retrying"
     assert attempts[1]["time"] - attempts[0]["time"] >= 0.8, f"{name} did not back off"
 PY
 
+request_count() {
+  python3 -c 'import json, pathlib, sys; print(sum(json.loads(line).get("kind") == sys.argv[2] for line in pathlib.Path(sys.argv[1]).read_text().splitlines()))' "$REQUESTS" "$1"
+}
+
+assert_invalid_poll_config() {
+  local name="$1" value="$2" before after output status
+  output="$TMP/invalid-${name}-${value//[^A-Za-z0-9]/_}.out"
+  before="$(request_count submit)"
+  set +e
+  (cd "$ROOT" && env TMPDIR="$TMP" OFFLOAD_CONFIG="$TMP/config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_API_KEY=test OFFLOAD_REMOTE=origin OFFLOAD_POLL_INTERVAL=1 OFFLOAD_RETRY_BACKOFF_BASE=5 OFFLOAD_POLL_TIMEOUT=8 "$name=$value" "$CLIENT" submit --no-wait invalid-config) >"$output" 2>&1
+  status=$?
+  set -e
+  after="$(request_count submit)"
+  [[ "$status" -eq 78 ]] || fail "$name=$value exited $status instead of 78: $(<"$output")"
+  [[ "$before" -eq "$after" ]] || fail "$name=$value submitted a run before rejecting invalid polling configuration"
+  [[ "$(<"$output")" == *"$name must be"* ]] || fail "$name=$value did not identify the invalid setting"
+}
+
+assert_invalid_poll_config OFFLOAD_POLL_INTERVAL 0
+assert_invalid_poll_config OFFLOAD_POLL_INTERVAL nan
+assert_invalid_poll_config OFFLOAD_POLL_INTERVAL 60.1
+assert_invalid_poll_config OFFLOAD_RETRY_BACKOFF_BASE 0
+assert_invalid_poll_config OFFLOAD_RETRY_BACKOFF_BASE inf
+assert_invalid_poll_config OFFLOAD_RETRY_BACKOFF_BASE 30.1
+assert_invalid_poll_config OFFLOAD_POLL_TIMEOUT 0
+assert_invalid_poll_config OFFLOAD_POLL_TIMEOUT 1.5
+assert_invalid_poll_config OFFLOAD_POLL_TIMEOUT 31536001
+
 export OFFLOAD_CONFIG="$TMP/config"
+unset OFFLOAD_POLL_INTERVAL OFFLOAD_RETRY_BACKOFF_BASE OFFLOAD_POLL_TIMEOUT
 # shellcheck source=../plugins/claude-go-brr/offload.sh
 source "$CLIENT"
+[[ "$POLL_INTERVAL" == "1" ]] || fail "default healthy polling interval is not one second"
+[[ "$RETRY_BACKOFF_BASE" == "5" ]] || fail "default transient retry base is not five seconds"
+[[ "$(bounded_backoff 1)" == "5.0" ]] || fail "first transient retry did not use the independent five-second base"
+[[ "$(bounded_backoff 2)" == "10.0" ]] || fail "second transient retry did not back off exponentially"
+[[ "$(bounded_backoff 4)" == "30.0" ]] || fail "transient retry backoff did not retain its 30-second cap"
 require_run_id "$(printf 'a%.0s' {1..128})"
 if (require_run_id "$(printf 'a%.0s' {1..129})") >/dev/null 2>&1; then
   fail "129-character run_id was accepted"
@@ -441,9 +500,14 @@ PY
 [[ "$(apply_events_response "$legacy_body" legacy 0 "$legacy_state" "$legacy_log")" == $'1\tlegacy\t0\trunning\t0\t0' ]] || fail "legacy response fallback did not parse"
 
 auth_config="$TMP/auth-config"
-OFFLOAD_CONFIG="$auth_config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" "$CLIENT" auth exchange test-device --name protocol-test >/dev/null
+OFFLOAD_CONFIG="$auth_config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_POLL_INTERVAL=2 OFFLOAD_RETRY_BACKOFF_BASE=3 OFFLOAD_POLL_TIMEOUT=10 "$CLIENT" auth exchange test-device --name protocol-test >/dev/null
 [[ "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$auth_config")" == "0o600" ]] || fail "auth config permissions are not 0600"
 [[ "$(<"$auth_config")" == *'OFFLOAD_API_KEY=off_client_test'* ]] || fail "exchange token was not saved"
+[[ "$(<"$auth_config")" == *'OFFLOAD_POLL_INTERVAL=2'* ]] || fail "healthy poll interval was not preserved in saved config"
+[[ "$(<"$auth_config")" == *'OFFLOAD_RETRY_BACKOFF_BASE=3'* ]] || fail "transient retry base was not preserved in saved config"
+[[ "$(<"$auth_config")" == *'OFFLOAD_POLL_TIMEOUT=10'* ]] || fail "poll timeout was not preserved in saved config"
+override_values="$(OFFLOAD_CONFIG="$auth_config" OFFLOAD_POLL_INTERVAL=0.5 OFFLOAD_RETRY_BACKOFF_BASE=4 OFFLOAD_POLL_TIMEOUT=9 bash -c 'source "$1"; printf "%s\t%s\t%s" "$POLL_INTERVAL" "$RETRY_BACKOFF_BASE" "$POLL_TIMEOUT"' _ "$CLIENT")"
+[[ "$override_values" == $'0.5\t4\t9' ]] || fail "environment polling overrides did not take precedence over saved config"
 python3 - "$REQUESTS" <<'PY'
 import json
 from pathlib import Path
