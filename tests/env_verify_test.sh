@@ -6,6 +6,7 @@ CLIENT="$ROOT/plugins/claude-go-brr/offload.sh"
 TMP="$(mktemp -d)"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 REQUESTS="$TMP/requests.jsonl"
+FULL_CATALOG="Agent,Bash,CronCreate,CronDelete,CronList,DesignSync,Edit,EnterWorktree,ExitWorktree,Monitor,NotebookEdit,PushNotification,Read,ReportFindings,ScheduleWakeup,SendMessage,Skill,TaskCreate,TaskGet,TaskList,TaskOutput,TaskStop,TaskUpdate,WebFetch,WebSearch,Workflow,Write"
 SERVER_PID=""
 
 cleanup() {
@@ -96,11 +97,32 @@ run_client > "$TMP/metadata.out"
 [[ "$(<"$TMP/metadata.out")" == *"Configured env vars (count=1):"* ]] || fail "ordinary env metadata output changed"
 
 run_client \
+  --expect ANTHROPIC_BASE_URL=https://accelerator.example/mock/zero \
   --expect CLAUDE_BRR_MODEL=claude-sonnet-5 \
   --expect CLAUDE_BRR_MAX_BUDGET_USD=0.30 \
-  --expect CLAUDE_BRR_TOOLS=Bash > "$TMP/match.out"
+  --expect CLAUDE_BRR_PROVIDER_TELEMETRY=1 \
+  --expect "CLAUDE_BRR_TOOLS=$FULL_CATALOG" > "$TMP/match.out"
 [[ "$(<"$TMP/match.out")" == *"runtime_env_match=true"* ]] || fail "matching values were not attested"
 [[ "$(<"$TMP/match.out")" != *"0.30"* ]] || fail "matching value leaked to output"
+python3 - "$REQUESTS" "$FULL_CATALOG" <<'PY'
+import json
+import sys
+
+record = json.loads(open(sys.argv[1], encoding="utf-8").read().splitlines()[-1])
+assert record["payload"]["expected"] == {
+    "ANTHROPIC_BASE_URL": "https://accelerator.example/mock/zero",
+    "CLAUDE_BRR_MAX_BUDGET_USD": "0.30",
+    "CLAUDE_BRR_MODEL": "claude-sonnet-5",
+    "CLAUDE_BRR_PROVIDER_TELEMETRY": "1",
+    "CLAUDE_BRR_TOOLS": sys.argv[2],
+}
+assert len(sys.argv[2].encode()) > 256
+PY
+
+run_client \
+  --expect CLAUDE_BRR_MAX_BUDGET_USD=0.30 \
+  --expect CLAUDE_BRR_PROVIDER_TELEMETRY=0 > "$TMP/provider-off.out"
+[[ "$(<"$TMP/provider-off.out")" == *"runtime_env_match=true"* ]] || fail "explicit provider telemetry disable was not attested"
 
 set +e
 run_client --expect CLAUDE_BRR_MAX_BUDGET_USD=0.60 > "$TMP/mismatch.out" 2>&1
@@ -119,6 +141,27 @@ set -e
 [[ "$status" -eq 64 ]] || fail "credential key was not rejected locally"
 [[ "$(wc -l < "$REQUESTS" | tr -d ' ')" == "$requests_before" ]] || fail "credential expectation reached the host"
 [[ "$(<"$TMP/secret.out")" != *"guess"* ]] || fail "rejected credential guess leaked to output"
+
+set +e
+run_client --expect CLAUDE_BRR_TOOLS=Bash,Bash > "$TMP/tools.out" 2>&1
+status=$?
+set -e
+[[ "$status" -eq 64 ]] || fail "duplicate exact tools were not rejected locally"
+[[ "$(wc -l < "$REQUESTS" | tr -d ' ')" == "$requests_before" ]] || fail "invalid tool catalog reached the host"
+
+for invalid_expectation in \
+  "ANTHROPIC_BASE_URL=http://accelerator.example/mock/zero" \
+  "ANTHROPIC_BASE_URL=https://user:password@accelerator.example/mock/zero" \
+  "CLAUDE_BRR_TOOLS=Bash, Read" \
+  "CLAUDE_BRR_TOOLS=Bash,Unknown" \
+  "CLAUDE_BRR_PROVIDER_TELEMETRY=true"; do
+  set +e
+  run_client --expect "$invalid_expectation" > "$TMP/invalid-runtime.out" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 64 ]] || fail "invalid runtime expectation was not rejected locally"
+done
+[[ "$(wc -l < "$REQUESTS" | tr -d ' ')" == "$requests_before" ]] || fail "invalid runtime expectation reached the host"
 
 set +e
 run_client --expect CLAUDE_BRR_EFFORT=xhigh > "$TMP/legacy.out" 2>&1

@@ -823,13 +823,23 @@ build_env_verify_payload() {
 import json
 import re
 import sys
+import urllib.parse
 
 allowed = {
+    "ANTHROPIC_BASE_URL",
     "CLAUDE_BRR_EFFORT",
     "CLAUDE_BRR_MAX_BUDGET_USD",
     "CLAUDE_BRR_MODEL",
+    "CLAUDE_BRR_PROVIDER_TELEMETRY",
     "CLAUDE_BRR_TOOLS",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+}
+allowed_tools = {
+    "Agent", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+    "EnterWorktree", "ExitWorktree", "Monitor", "NotebookEdit", "PushNotification",
+    "Read", "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "TaskCreate",
+    "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "WebFetch",
+    "WebSearch", "Workflow", "Write",
 }
 expected = {}
 for item in sys.argv[1:]:
@@ -843,10 +853,25 @@ for item in sys.argv[1:]:
     if key in expected:
         print(f"error: duplicate --expect key: {key}", file=sys.stderr)
         raise SystemExit(64)
-    if not value or any(character in value for character in "\n\r\0") or len(value.encode()) > 256:
-        print(f"error: expected value for {key} must be a non-empty single-line value up to 256 bytes", file=sys.stderr)
+    value_limit = 512 if key == "CLAUDE_BRR_TOOLS" else 256
+    if not value or any(character in value for character in "\n\r\0") or len(value.encode()) > value_limit:
+        print(f"error: expected value for {key} exceeds its bounded single-line grammar", file=sys.stderr)
         raise SystemExit(64)
-    if key == "CLAUDE_BRR_MODEL":
+    if key == "ANTHROPIC_BASE_URL":
+        try:
+            parts = urllib.parse.urlsplit(value)
+            valid = (
+                parts.scheme == "https"
+                and bool(parts.hostname)
+                and parts.username is None
+                and parts.password is None
+                and not parts.query
+                and not parts.fragment
+                and (parts.port is None or 1 <= parts.port <= 65535)
+            )
+        except ValueError:
+            valid = False
+    elif key == "CLAUDE_BRR_MODEL":
         valid = re.fullmatch(r"[A-Za-z0-9._:/@-]{1,200}", value) is not None
     elif key == "CLAUDE_BRR_EFFORT":
         valid = value in {"low", "medium", "high", "xhigh", "max"}
@@ -854,7 +879,14 @@ for item in sys.argv[1:]:
         valid = re.fullmatch(r"(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,6})?", value) is not None
         valid = valid and 0.000001 <= float(value) <= 1000 if valid else False
     elif key == "CLAUDE_BRR_TOOLS":
-        valid = value == "Bash"
+        tools = value.split(",")
+        valid = (
+            1 <= len(tools) <= 32
+            and len(tools) == len(set(tools))
+            and all(tool in allowed_tools for tool in tools)
+        )
+    elif key == "CLAUDE_BRR_PROVIDER_TELEMETRY":
+        valid = value in {"0", "1"}
     else:
         valid = value == "1"
     if not valid:
