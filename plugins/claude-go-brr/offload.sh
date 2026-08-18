@@ -29,6 +29,7 @@
 #   OFFLOAD_POLL_INTERVAL successful run/event polling interval (default 1 second)
 #   OFFLOAD_RETRY_BACKOFF_BASE transient-error retry base (default 5 seconds)
 #   OFFLOAD_POLL_TIMEOUT maximum wait for a submitted run (default 3600 seconds)
+#   OFFLOAD_POLL_CONNECT_TIMEOUT connection bound for status/event polls (default 5 seconds)
 #
 set -Eeuo pipefail
 
@@ -41,6 +42,7 @@ ENV_OFFLOAD_GITHUB_LOGIN="${OFFLOAD_GITHUB_LOGIN-}"
 ENV_OFFLOAD_POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL-}"
 ENV_OFFLOAD_RETRY_BACKOFF_BASE="${OFFLOAD_RETRY_BACKOFF_BASE-}"
 ENV_OFFLOAD_POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT-}"
+ENV_OFFLOAD_POLL_CONNECT_TIMEOUT="${OFFLOAD_POLL_CONNECT_TIMEOUT-}"
 # shellcheck disable=SC1090
 [[ -f "$CONFIG" ]] && source "$CONFIG"
 [[ -n "$ENV_OFFLOAD_API_URL" ]] && OFFLOAD_API_URL="$ENV_OFFLOAD_API_URL"
@@ -50,10 +52,12 @@ ENV_OFFLOAD_POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT-}"
 [[ -n "$ENV_OFFLOAD_POLL_INTERVAL" ]] && OFFLOAD_POLL_INTERVAL="$ENV_OFFLOAD_POLL_INTERVAL"
 [[ -n "$ENV_OFFLOAD_RETRY_BACKOFF_BASE" ]] && OFFLOAD_RETRY_BACKOFF_BASE="$ENV_OFFLOAD_RETRY_BACKOFF_BASE"
 [[ -n "$ENV_OFFLOAD_POLL_TIMEOUT" ]] && OFFLOAD_POLL_TIMEOUT="$ENV_OFFLOAD_POLL_TIMEOUT"
+[[ -n "$ENV_OFFLOAD_POLL_CONNECT_TIMEOUT" ]] && OFFLOAD_POLL_CONNECT_TIMEOUT="$ENV_OFFLOAD_POLL_CONNECT_TIMEOUT"
 
 POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL:-1}"
 RETRY_BACKOFF_BASE="${OFFLOAD_RETRY_BACKOFF_BASE:-5}"
 POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT:-3600}"
+POLL_CONNECT_TIMEOUT="${OFFLOAD_POLL_CONNECT_TIMEOUT:-5}"
 
 usage() {
   awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
@@ -364,12 +368,12 @@ print(min(30.0, base * (2 ** min(attempt - 1, 5))))' "$1" "$RETRY_BACKOFF_BASE"
 }
 
 validate_poll_configuration() {
-  python3 - "$POLL_INTERVAL" "$RETRY_BACKOFF_BASE" "$POLL_TIMEOUT" <<'PY'
+  python3 - "$POLL_INTERVAL" "$RETRY_BACKOFF_BASE" "$POLL_TIMEOUT" "$POLL_CONNECT_TIMEOUT" <<'PY'
 import math
 import re
 import sys
 
-poll_interval, retry_base, poll_timeout = sys.argv[1:]
+poll_interval, retry_base, poll_timeout, connect_timeout = sys.argv[1:]
 
 def fail(message):
     print(f"error: {message}", file=sys.stderr)
@@ -385,6 +389,7 @@ def bounded_number(name, raw, minimum, maximum):
 
 bounded_number("OFFLOAD_POLL_INTERVAL", poll_interval, 0.1, 60.0)
 bounded_number("OFFLOAD_RETRY_BACKOFF_BASE", retry_base, 0.1, 30.0)
+bounded_number("OFFLOAD_POLL_CONNECT_TIMEOUT", connect_timeout, 0.1, 60.0)
 if not re.fullmatch(r"[1-9][0-9]*", poll_timeout) or not 1 <= int(poll_timeout) <= 31_536_000:
     fail("OFFLOAD_POLL_TIMEOUT must be an integer between 1 and 31536000 seconds")
 PY
@@ -571,6 +576,7 @@ save_config() {
     [[ -n "${OFFLOAD_POLL_INTERVAL:-}" ]] && printf 'OFFLOAD_POLL_INTERVAL=%s\n' "$OFFLOAD_POLL_INTERVAL"
     [[ -n "${OFFLOAD_RETRY_BACKOFF_BASE:-}" ]] && printf 'OFFLOAD_RETRY_BACKOFF_BASE=%s\n' "$OFFLOAD_RETRY_BACKOFF_BASE"
     [[ -n "${OFFLOAD_POLL_TIMEOUT:-}" ]] && printf 'OFFLOAD_POLL_TIMEOUT=%s\n' "$OFFLOAD_POLL_TIMEOUT"
+    [[ -n "${OFFLOAD_POLL_CONNECT_TIMEOUT:-}" ]] && printf 'OFFLOAD_POLL_CONNECT_TIMEOUT=%s\n' "$OFFLOAD_POLL_CONNECT_TIMEOUT"
   } > "$CONFIG"
   chmod 600 "$CONFIG"
   echo "saved config: $CONFIG"
@@ -1144,7 +1150,7 @@ PY
     remaining=$(( POLL_TIMEOUT - (SECONDS - started) ))
     : > "$header_file"
     : > "$poll_dir/run-body"
-    if ! run_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/run-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id")"; then
+    if ! run_code="$(curl -sS --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/run-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id")"; then
       retry_attempt=$(( retry_attempt + 1 ))
       retry_delay="$(bounded_backoff "$retry_attempt")"
       echo "> run-status request failed; retrying after ${retry_delay}s" >&2
@@ -1202,7 +1208,7 @@ PY
 
     if [[ "$live_events_unavailable" -eq 0 && ! ( "$latest_cursor_present" -eq 1 && "$current_events_confirmed" -eq 1 && "$after" -ge "$latest_cursor" ) ]]; then
       : > "$header_file"
-      if ! event_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/events-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id/events?after=$after&limit_bytes=262144")"; then
+      if ! event_code="$(curl -sS --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/events-body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id/events?after=$after&limit_bytes=262144")"; then
         retry_attempt=$(( retry_attempt + 1 ))
         retry_delay="$(bounded_backoff "$retry_attempt")"
         echo "> event request failed; retrying after ${retry_delay}s with after=$after" >&2

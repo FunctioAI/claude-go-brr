@@ -467,13 +467,17 @@ assert_invalid_poll_config OFFLOAD_RETRY_BACKOFF_BASE 30.1
 assert_invalid_poll_config OFFLOAD_POLL_TIMEOUT 0
 assert_invalid_poll_config OFFLOAD_POLL_TIMEOUT 1.5
 assert_invalid_poll_config OFFLOAD_POLL_TIMEOUT 31536001
+assert_invalid_poll_config OFFLOAD_POLL_CONNECT_TIMEOUT 0
+assert_invalid_poll_config OFFLOAD_POLL_CONNECT_TIMEOUT nan
+assert_invalid_poll_config OFFLOAD_POLL_CONNECT_TIMEOUT 60.1
 
 export OFFLOAD_CONFIG="$TMP/config"
-unset OFFLOAD_POLL_INTERVAL OFFLOAD_RETRY_BACKOFF_BASE OFFLOAD_POLL_TIMEOUT
+unset OFFLOAD_POLL_INTERVAL OFFLOAD_RETRY_BACKOFF_BASE OFFLOAD_POLL_TIMEOUT OFFLOAD_POLL_CONNECT_TIMEOUT
 # shellcheck source=../plugins/claude-go-brr/offload.sh
 source "$CLIENT"
 [[ "$POLL_INTERVAL" == "1" ]] || fail "default healthy polling interval is not one second"
 [[ "$RETRY_BACKOFF_BASE" == "5" ]] || fail "default transient retry base is not five seconds"
+[[ "$POLL_CONNECT_TIMEOUT" == "5" ]] || fail "default poll connection timeout is not five seconds"
 [[ "$(bounded_backoff 1)" == "5.0" ]] || fail "first transient retry did not use the independent five-second base"
 [[ "$(bounded_backoff 2)" == "10.0" ]] || fail "second transient retry did not back off exponentially"
 [[ "$(bounded_backoff 4)" == "30.0" ]] || fail "transient retry backoff did not retain its 30-second cap"
@@ -522,14 +526,15 @@ PY
 [[ "$(apply_events_response "$legacy_body" legacy 0 "$legacy_state" "$legacy_log")" == $'1\tlegacy\t0\trunning\t0\t0' ]] || fail "legacy response fallback did not parse"
 
 auth_config="$TMP/auth-config"
-OFFLOAD_CONFIG="$auth_config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_POLL_INTERVAL=2 OFFLOAD_RETRY_BACKOFF_BASE=3 OFFLOAD_POLL_TIMEOUT=10 "$CLIENT" auth exchange test-device --name protocol-test >/dev/null
+OFFLOAD_CONFIG="$auth_config" OFFLOAD_API_URL="http://127.0.0.1:$PORT" OFFLOAD_POLL_INTERVAL=2 OFFLOAD_RETRY_BACKOFF_BASE=3 OFFLOAD_POLL_TIMEOUT=10 OFFLOAD_POLL_CONNECT_TIMEOUT=7 "$CLIENT" auth exchange test-device --name protocol-test >/dev/null
 [[ "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$auth_config")" == "0o600" ]] || fail "auth config permissions are not 0600"
 [[ "$(<"$auth_config")" == *'OFFLOAD_API_KEY=off_client_test'* ]] || fail "exchange token was not saved"
 [[ "$(<"$auth_config")" == *'OFFLOAD_POLL_INTERVAL=2'* ]] || fail "healthy poll interval was not preserved in saved config"
 [[ "$(<"$auth_config")" == *'OFFLOAD_RETRY_BACKOFF_BASE=3'* ]] || fail "transient retry base was not preserved in saved config"
 [[ "$(<"$auth_config")" == *'OFFLOAD_POLL_TIMEOUT=10'* ]] || fail "poll timeout was not preserved in saved config"
-override_values="$(OFFLOAD_CONFIG="$auth_config" OFFLOAD_POLL_INTERVAL=0.5 OFFLOAD_RETRY_BACKOFF_BASE=4 OFFLOAD_POLL_TIMEOUT=9 bash -c 'source "$1"; printf "%s\t%s\t%s" "$POLL_INTERVAL" "$RETRY_BACKOFF_BASE" "$POLL_TIMEOUT"' _ "$CLIENT")"
-[[ "$override_values" == $'0.5\t4\t9' ]] || fail "environment polling overrides did not take precedence over saved config"
+[[ "$(<"$auth_config")" == *'OFFLOAD_POLL_CONNECT_TIMEOUT=7'* ]] || fail "poll connect timeout was not preserved in saved config"
+override_values="$(OFFLOAD_CONFIG="$auth_config" OFFLOAD_POLL_INTERVAL=0.5 OFFLOAD_RETRY_BACKOFF_BASE=4 OFFLOAD_POLL_TIMEOUT=9 OFFLOAD_POLL_CONNECT_TIMEOUT=6 bash -c 'source "$1"; printf "%s\t%s\t%s\t%s" "$POLL_INTERVAL" "$RETRY_BACKOFF_BASE" "$POLL_TIMEOUT" "$POLL_CONNECT_TIMEOUT"' _ "$CLIENT")"
+[[ "$override_values" == $'0.5\t4\t9\t6' ]] || fail "environment polling overrides did not take precedence over saved config"
 python3 - "$REQUESTS" <<'PY'
 import json
 from pathlib import Path

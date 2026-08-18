@@ -61,8 +61,10 @@ network failures, plus rate-limit and server failures without `Retry-After`, use
 a separate exponential retry delay based at five seconds and capped at 30
 seconds. Advanced users can override these with `OFFLOAD_POLL_INTERVAL` (0.1–60
 seconds), `OFFLOAD_RETRY_BACKOFF_BASE` (0.1–30 seconds), and
-`OFFLOAD_POLL_TIMEOUT` (an integer up to 31,536,000 seconds). Invalid or
-out-of-range values are rejected before a run is submitted.
+`OFFLOAD_POLL_TIMEOUT` (an integer up to 31,536,000 seconds). Status and event
+polls also bound connection establishment to five seconds; override that with
+`OFFLOAD_POLL_CONNECT_TIMEOUT` (0.1–60 seconds). Invalid or out-of-range values
+are rejected before a run is submitted.
 
 On current hosts, the client probes the event protocol once and then skips
 caught-up event requests until the authoritative status cursor advances.
