@@ -338,6 +338,39 @@ except Exception:
     print("")' "$1"
 }
 
+json_run_diagnostic() {
+  python3 - "$1" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+allowed = {
+    "provider_stream_connection_closed": "model stream connection closed",
+    "provider_stream_server_error": "model stream server error",
+    "provider_stream_stalled": "model stream stalled",
+    "provider_stream_interrupted": "model stream interrupted",
+}
+try:
+    doc = json.loads(Path(sys.argv[1]).read_text())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+diagnostic = doc.get("diagnostic") if isinstance(doc, dict) else None
+code = diagnostic.get("code") if isinstance(diagnostic, dict) else None
+label = allowed.get(code)
+if label is None:
+    raise SystemExit(0)
+indexes = []
+for item in doc.get("prompt_results", [])[:128]:
+    if not isinstance(item, dict) or item.get("failure_code") != code:
+        continue
+    index = item.get("prompt_index")
+    if isinstance(index, int) and not isinstance(index, bool) and 0 <= index <= 1_000_000:
+        indexes.append(str(index))
+seat_text = f"; failed prompt seat(s): {','.join(indexes[:16])}" if indexes else ""
+print(f"{label} [{code}]{seat_text}")
+PY
+}
+
 retry_after_seconds() {
   python3 - "$1" <<'PY'
 import email.utils
@@ -1022,7 +1055,7 @@ env_cmd() {
 
 submit_cmd() {
   local folder wait prompt branch dirty_files git_ref body resp run_id elapsed status log_file log_prefix
-  local after apply_meta claim_attempts error_message event_after_before event_code event_logs_truncated event_shape has_patch has_output header_file
+  local after apply_meta claim_attempts diagnostic_message error_message event_after_before event_code event_logs_truncated event_shape has_patch has_output header_file
   local latest_cursor latest_cursor_present legacy_has_more legacy_status legacy_terminal live_events_unavailable logs_complete next_after
   local current_events_confirmed poll_dir remaining remembered_claim_attempts retry_attempt retry_delay run_code run_logs_truncated run_meta started state_file terminal warned_logs_truncated
   folder="$PWD"
@@ -1323,8 +1356,13 @@ PY
       if [[ "$status" == "env_failed" ]]; then
         echo "x run $status - project environment injection failed; manage values in the browser: $(env_settings_url "$folder_id")" >&2
       else
-        error_message="$(json_error_message "$poll_dir/run-body")"
-        echo "x run $status${error_message:+: $error_message}" >&2
+        diagnostic_message="$(json_run_diagnostic "$poll_dir/run-body")"
+        if [[ -n "$diagnostic_message" ]]; then
+          echo "x run $status: $diagnostic_message" >&2
+        else
+          error_message="$(json_error_message "$poll_dir/run-body")"
+          echo "x run $status${error_message:+: $error_message}" >&2
+        fi
       fi
       exit 1
     fi

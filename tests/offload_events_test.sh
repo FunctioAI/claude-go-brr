@@ -95,6 +95,26 @@ def record_for(run_id, record):
         return run_record(run_id, "ok", True, 1, agent_output="Cursor skip complete")
     if scenario == "unknown_terminal":
         return run_record(run_id, "custom_terminal_error", True, patch="partial patch", agent_output="Partial output")
+    if scenario == "provider_failure":
+        data = run_record(
+            run_id,
+            "run_failed",
+            True,
+            patch="partial patch",
+            agent_output="Private partial output",
+        )
+        data["diagnostic"] = {
+            "category": "provider_transport_failure",
+            "code": "provider_stream_connection_closed",
+            "stage": "claude_stream",
+            "summary": "untrusted summary must not be displayed",
+        }
+        data["prompt_results"] = [{
+            "prompt_index": 11,
+            "status": "failed",
+            "failure_code": "provider_stream_connection_closed",
+        }]
+        return data
     if scenario == "incomplete_logs":
         return run_record(run_id, "ok", True, 5, agent_output="Completed with incomplete logs", logs_complete=False)
     if scenario == "http_404":
@@ -218,6 +238,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(events_response([{"seq": 3, "prompt_index": 0, "text": "same delta\n"}], 3))
             return
         if scenario == "invalid_patch":
+            self.send_json(events_response([], after))
+            return
+        if scenario == "provider_failure":
             self.send_json(events_response([], after))
             return
         if scenario == "network_retry" and poll == 1:
@@ -361,6 +384,11 @@ run_client unknown_terminal 1
 unknown_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
 [[ "$(<"$ROOT/.git/offload/$unknown_run_id.output.txt")" == "Partial output" ]] || fail "failed-run partial output was not preserved"
 [[ "$(<"$ROOT/.git/offload/$unknown_run_id.patch")" == "partial patch" ]] || fail "failed-run partial patch was not preserved"
+
+run_client provider_failure 1
+provider_failure_output="$(<"$RUN_OUTPUT")"
+[[ "$provider_failure_output" == *'x run run_failed: model stream connection closed [provider_stream_connection_closed]; failed prompt seat(s): 11'* ]] || fail "provider stream failure was not surfaced precisely"
+[[ "$provider_failure_output" != *'untrusted summary must not be displayed'* ]] || fail "untrusted diagnostic summary reached client output"
 
 run_client incomplete_logs 0
 [[ "$(<"$RUN_OUTPUT")" == *'live logs were truncated'* ]] || fail "log truncation was not surfaced"
