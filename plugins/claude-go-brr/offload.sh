@@ -871,6 +871,7 @@ allowed = {
     "CLAUDE_BRR_MODEL",
     "CLAUDE_BRR_PROVIDER_TELEMETRY",
     "CLAUDE_BRR_PROMPT_WORKSPACE_MODE",
+    "CLAUDE_BRR_COMMAND_GUARD",
     "CLAUDE_BRR_TOOLS",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 }
@@ -929,6 +930,8 @@ for item in sys.argv[1:]:
         valid = value in {"0", "1"}
     elif key == "CLAUDE_BRR_PROMPT_WORKSPACE_MODE":
         valid = value == "isolated_tracked_worktrees"
+    elif key == "CLAUDE_BRR_COMMAND_GUARD":
+        valid = value == "debugger_profiler_v1"
     else:
         valid = value == "1"
     if not valid:
