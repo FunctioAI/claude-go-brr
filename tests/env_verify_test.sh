@@ -101,6 +101,7 @@ run_client \
   --expect CLAUDE_BRR_MODEL=claude-sonnet-5 \
   --expect CLAUDE_BRR_MAX_BUDGET_USD=0.30 \
   --expect CLAUDE_BRR_PROVIDER_TELEMETRY=1 \
+  --expect CLAUDE_BRR_PROMPT_WORKSPACE_MODE=isolated_tracked_worktrees \
   --expect "CLAUDE_BRR_TOOLS=$FULL_CATALOG" > "$TMP/match.out"
 [[ "$(<"$TMP/match.out")" == *"runtime_env_match=true"* ]] || fail "matching values were not attested"
 [[ "$(<"$TMP/match.out")" != *"0.30"* ]] || fail "matching value leaked to output"
@@ -114,6 +115,7 @@ assert record["payload"]["expected"] == {
     "CLAUDE_BRR_MAX_BUDGET_USD": "0.30",
     "CLAUDE_BRR_MODEL": "claude-sonnet-5",
     "CLAUDE_BRR_PROVIDER_TELEMETRY": "1",
+    "CLAUDE_BRR_PROMPT_WORKSPACE_MODE": "isolated_tracked_worktrees",
     "CLAUDE_BRR_TOOLS": sys.argv[2],
 }
 assert len(sys.argv[2].encode()) > 256
@@ -154,7 +156,8 @@ for invalid_expectation in \
   "ANTHROPIC_BASE_URL=https://user:password@accelerator.example/mock/zero" \
   "CLAUDE_BRR_TOOLS=Bash, Read" \
   "CLAUDE_BRR_TOOLS=Bash,Unknown" \
-  "CLAUDE_BRR_PROVIDER_TELEMETRY=true"; do
+  "CLAUDE_BRR_PROVIDER_TELEMETRY=true" \
+  "CLAUDE_BRR_PROMPT_WORKSPACE_MODE=isolated"; do
   set +e
   run_client --expect "$invalid_expectation" > "$TMP/invalid-runtime.out" 2>&1
   status=$?
